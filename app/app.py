@@ -80,6 +80,14 @@ def safe_next(value, fallback="/admin"):
     return fallback
 
 
+def normalized_upload_name(filename):
+    """Keep a valid extension even when the visible filename is non-ASCII."""
+    raw_name = (filename or "").strip()
+    ext = Path(raw_name).suffix.lower()
+    stem = secure_filename(Path(raw_name).stem) or "video"
+    return f"{stem}{ext}", ext
+
+
 def login_required(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
@@ -323,8 +331,7 @@ def upload():
         flash("请选择视频文件。", "error")
         return redirect(url_for("index"))
 
-    original_name = secure_filename(f.filename) or "video"
-    ext = Path(original_name).suffix.lower()
+    original_name, ext = normalized_upload_name(f.filename)
     if ext not in ALLOWED_EXTENSIONS:
         flash(f"暂不接受该扩展名：{ext or '(无扩展名)'}", "error")
         return redirect(url_for("index")), 400
