@@ -1,0 +1,179 @@
+{% extends "base.html" %}
+{% block title %}{{ video.title }} · Video Box{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div>
+    <div class="eyebrow">Resource</div>
+    <h1 class="page-title">{{ video.title }}</h1>
+    <p class="page-subtitle">{{ video.original_name }} · {{ video.created_at }} · {{ video.views }} 次观看</p>
+  </div>
+  <div class="compact-actions">
+    <a class="btn secondary" href="/admin">返回管理中心</a>
+    <button type="button" class="btn secondary" onclick="window.location.reload()">刷新页面</button>
+    {% if video.access_enabled and video.status == 'ready' %}<a class="btn" href="/v/{{ video.slug }}" target="_blank" rel="noopener">打开播放页</a>{% endif %}
+  </div>
+</div>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% for category, message in messages %}<div class="notice {{ category }}">{{ message }}</div>{% endfor %}
+{% endwith %}
+
+<section class="card">
+  <div class="row">
+    <div class="grow">
+      <div class="tiny muted">资源状态</div>
+      <div style="margin-top:7px"><span id="status" class="badge status-{{ video.status }}">
+        {% if video.status == 'ready' %}已就绪{% elif video.status == 'processing' %}转码中{% elif video.status == 'queued' %}排队中{% elif video.status == 'uploading' %}上传中{% elif video.status == 'error' %}失败{% else %}{{ video.status }}{% endif %}
+      </span></div>
+      <div class="muted tiny" id="progressText" style="margin-top:8px"></div>
+    </div>
+    <div class="tiny muted">资源 ID<br><code>{{ video.slug }}</code></div>
+  </div>
+  {% if video.error %}<div class="notice error" style="margin-bottom:0">{{ video.error }}</div>{% endif %}
+</section>
+
+<section class="card access-card {{ '' if video.access_enabled else 'paused' }}">
+  <div class="row">
+    <div class="grow">
+      <h2 class="card-title">访问控制</h2>
+      {% if video.access_enabled %}
+        <p class="card-copy"><span class="ok"><strong>当前允许公开播放。</strong></span> 暂停后，播放页和视频流都会被拦截；恢复后原链接和原二维码继续有效。</p>
+      {% else %}
+        <p class="card-copy"><span class="error"><strong>当前已暂停公开播放。</strong></span> 视频文件仍保留在服务器，只是外部无法观看。</p>
+      {% endif %}
+    </div>
+    <form action="/manage/{{ video.slug }}/access" method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {% if video.access_enabled %}
+        <input type="hidden" name="action" value="disable">
+        <button type="submit" class="danger" onclick="return confirm('确认暂停这个视频的外部访问？文件不会被删除。')">暂停访问</button>
+      {% else %}
+        <input type="hidden" name="action" value="enable">
+        <button type="submit">恢复访问</button>
+      {% endif %}
+    </form>
+  </div>
+</section>
+
+<section class="card">
+  <h2 class="card-title">标题与简介</h2>
+  <p class="card-copy" style="margin-bottom:18px">简介也会作为二维码备注的默认内容。</p>
+  <form action="/manage/{{ video.slug }}" method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="field"><label>标题</label><input name="title" maxlength="200" value="{{ video.title }}"></div>
+    <div class="field"><label>简介</label><textarea name="description" rows="4" maxlength="1000" placeholder="可以留空">{{ video.description }}</textarea></div>
+    <button type="submit">保存修改</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2 class="card-title">分享与二维码</h2>
+  <p class="card-copy">二维码按需生成，不会在打开页面时自动创建。</p>
+  <div class="divider"></div>
+  <div class="tiny muted">播放链接</div>
+  <code class="share-url">{{ video.share_url }}</code>
+  <div class="field" style="margin-top:16px">
+    <label>二维码下方文字</label>
+    <input id="qrCaption" maxlength="160" value="{{ video.description or video.title }}" placeholder="例如：视频简介、活动名称、日期">
+  </div>
+  <div class="actions">
+    <button type="button" id="qrBtn">生成 / 更新二维码</button>
+    <a id="qrDownloadSvg" class="button-link secondary" style="display:none" download="{{ video.slug }}-qr.svg">下载 SVG</a>
+    <button type="button" id="qrDownloadPng" class="secondary" style="display:none">下载 PNG</button>
+  </div>
+  <div id="qrBox" class="qrbox" style="display:none"><img id="qrImage" alt="二维码"></div>
+</section>
+
+<section class="card">
+  <div class="row">
+    <div class="grow">
+      <h2 class="card-title">转码日志</h2>
+      <p class="card-copy">日志保存在宿主机 <code>data/logs/{{ video.slug }}/</code>，重建容器不会丢失。</p>
+    </div>
+    <button type="button" class="secondary" id="refreshLogs">刷新日志</button>
+  </div>
+  <div class="divider"></div>
+  <h3 style="font-size:.9rem">任务事件</h3>
+  <pre id="eventLog" class="logbox">加载中…</pre>
+  <h3 style="font-size:.9rem;margin-top:18px">FFmpeg 输出</h3>
+  <pre id="ffmpegLog" class="logbox">加载中…</pre>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+  const slug = {{ video.slug|tojson }};
+  const statusEl = document.getElementById('status');
+  const progressEl = document.getElementById('progressText');
+  const statusLabels = {ready:'已就绪', processing:'转码中', queued:'排队中', uploading:'上传中', error:'失败'};
+
+  async function loadStatus() {
+    const r = await fetch('/api/status/' + slug, {cache:'no-store'});
+    if (!r.ok) return;
+    const d = await r.json();
+    statusEl.textContent = statusLabels[d.status] || d.status;
+    statusEl.className = `badge status-${d.status}`;
+    const p = d.progress || {};
+    progressEl.textContent = p.out_time ? `已处理到 ${p.out_time} · ${p.speed || ''} · frame ${p.frame || '-'}` : '';
+    return d.status;
+  }
+
+  async function loadLogs() {
+    const r = await fetch('/api/logs/' + slug, {cache:'no-store'});
+    if (!r.ok) return;
+    const d = await r.json();
+    document.getElementById('eventLog').textContent = d.events || '暂无事件日志';
+    document.getElementById('ffmpegLog').textContent = d.ffmpeg || 'FFmpeg 尚未输出日志';
+    await loadStatus();
+  }
+
+  document.getElementById('refreshLogs').addEventListener('click', loadLogs);
+  loadLogs();
+  {% if video.status in ['uploading','queued','processing'] %}
+  const logTimer = setInterval(async () => {
+    const s = await loadStatus();
+    if (s === 'ready' || s === 'error') { clearInterval(logTimer); loadLogs(); }
+  }, 3000);
+  {% endif %}
+
+  let currentQrUrl = '';
+  async function downloadPng() {
+    if (!currentQrUrl) return;
+    try {
+      const res = await fetch(currentQrUrl, {cache:'no-store'});
+      if (!res.ok) throw new Error(`二维码读取失败：HTTP ${res.status}`);
+      const svgText = await res.text();
+      const svgBlob = new Blob([svgText], {type:'image/svg+xml;charset=utf-8'});
+      const blobUrl = URL.createObjectURL(svgBlob);
+      try {
+        const img = new Image();
+        await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = () => reject(new Error('二维码图片加载失败')); img.src = blobUrl; });
+        const scale = 4;
+        const width = img.naturalWidth || 360;
+        const height = img.naturalHeight || 400;
+        const canvas = document.createElement('canvas');
+        canvas.width = width * scale; canvas.height = height * scale;
+        const ctx = canvas.getContext('2d', {alpha:false});
+        if (!ctx) throw new Error('浏览器无法创建图片画布');
+        ctx.imageSmoothingEnabled = false;
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/png');
+        if (!dataUrl.startsWith('data:image/png')) throw new Error('当前浏览器未能导出 PNG');
+        const a = document.createElement('a'); a.href = dataUrl; a.download = `${slug}-qr.png`;
+        document.body.appendChild(a); a.click(); a.remove();
+      } finally { URL.revokeObjectURL(blobUrl); }
+    } catch (err) { alert(`下载 PNG 失败：${err.message || err}`); }
+  }
+
+  document.getElementById('qrBtn').addEventListener('click', () => {
+    const caption = document.getElementById('qrCaption').value || '';
+    currentQrUrl = '/qr/' + slug + '.svg?caption=' + encodeURIComponent(caption) + '&t=' + Date.now();
+    document.getElementById('qrImage').src = currentQrUrl;
+    document.getElementById('qrBox').style.display = 'block';
+    const svgBtn = document.getElementById('qrDownloadSvg');
+    svgBtn.href = currentQrUrl; svgBtn.style.display = 'inline-flex';
+    document.getElementById('qrDownloadPng').style.display = 'inline-flex';
+  });
+  document.getElementById('qrDownloadPng').addEventListener('click', downloadPng);
+</script>
+{% endblock %}

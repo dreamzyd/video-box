@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}登录 · Video Box{% endblock %}
+{% block wrap_class %}login-wrap{% endblock %}
+{% block body %}
+<div class="login-shell">
+  <div class="login-panel">
+    <section class="card card-elevated login-card">
+      <div class="login-logo" aria-hidden="true"></div>
+      <div class="eyebrow">Video Box {{ app_version }}</div>
+      <h1 class="login-title">登录工作台</h1>
+      <p class="login-copy">登录后可以上传视频、管理播放权限、查看转码日志和生成二维码。公开视频链接无需登录。</p>
+
+      {% if error %}<div class="notice error">{{ error }}</div>{% endif %}
+
+      <form method="post" action="/login" id="loginForm">
+        <input type="hidden" name="next" value="{{ next_url }}">
+        <div class="field">
+          <label for="password">访问口令</label>
+          <div class="password-wrap">
+            <input id="password" type="password" name="password" autocomplete="current-password" autofocus required placeholder="输入 APP_PASSWORD">
+            <button type="button" class="password-toggle" id="passwordToggle" aria-label="显示或隐藏密码">显示</button>
+          </div>
+        </div>
+        <button type="submit" class="btn-wide" id="loginButton">登录</button>
+      </form>
+
+      <div class="login-meta">
+        <span>会话保持 {{ app_session_hours }} 小时</span>
+        <span>观看视频无需口令</span>
+      </div>
+    </section>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  const pwd = document.getElementById('password');
+  const toggle = document.getElementById('passwordToggle');
+  toggle.addEventListener('click', () => {
+    const showing = pwd.type === 'text';
+    pwd.type = showing ? 'password' : 'text';
+    toggle.textContent = showing ? '显示' : '隐藏';
+    pwd.focus();
+  });
+  document.getElementById('loginForm').addEventListener('submit', () => {
+    const btn = document.getElementById('loginButton');
+    btn.disabled = true;
+    btn.textContent = '正在登录…';
+  });
+</script>
+{% endblock %}

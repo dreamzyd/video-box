@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block title %}上传视频 · Video Box{% endblock %}
+{% block wrap_class %}narrow{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div>
+    <div class="eyebrow">Upload</div>
+    <h1 class="page-title">上传视频</h1>
+    <p class="page-subtitle">上传完成后会进入单任务转码队列，并自动跳转到管理中心继续查看状态。</p>
+  </div>
+  <a class="btn secondary" href="/admin">进入管理中心</a>
+</div>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% for category, message in messages %}<div class="notice {{ category }}">{{ message }}</div>{% endfor %}
+{% endwith %}
+
+<section class="card card-elevated upload-card">
+  <form id="uploadForm" action="/upload" method="post" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="request_id" value="{{ upload_request_id }}">
+
+    <div class="field">
+      <label for="title">标题</label>
+      <input id="title" name="title" placeholder="可留空，默认使用文件名">
+    </div>
+
+    <div class="field">
+      <label for="description">简介</label>
+      <textarea id="description" name="description" rows="3" maxlength="1000" placeholder="可用于资源备注，也可直接作为二维码下方文字"></textarea>
+    </div>
+
+    <div class="field">
+      <label for="video">视频文件</label>
+      <div class="file-shell">
+        <input id="video" type="file" name="video" accept="video/*,.mkv,.mov,.m2ts,.mts" required>
+        <div class="field-help" id="fileMeta">支持常见 MP4 / MOV / MKV / MTS 等格式。</div>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="orientation">输出方向</label>
+      <select id="orientation" name="orientation">
+        <option value="auto" selected>自动 · 保持原视频横/竖方向（推荐）</option>
+        <option value="landscape">强制横屏 16:9 · 1280×720，不裁切</option>
+        <option value="portrait">强制竖屏 9:16 · 720×1280，不裁切</option>
+      </select>
+      <div class="field-help">强制方向会通过缩放和补边适配，不会为了铺满而裁掉主体。</div>
+    </div>
+
+    <button id="uploadBtn" type="submit" class="btn-wide">开始上传</button>
+
+    <div class="progress-shell" id="progressShell" aria-live="polite">
+      <div class="progress-line"><div class="progress-bar" id="progressBar"></div></div>
+      <div class="progress-meta"><span id="progressText">准备上传…</span><span id="progressPercent">0%</span></div>
+    </div>
+  </form>
+</section>
+
+<div class="notice">上传和管理需要登录；分享出去的 <code>/v/资源ID</code> 播放页不需要登录。转码默认串行执行，更适合 2 核 2G 这类小型服务器。</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  const form = document.getElementById('uploadForm');
+  const btn = document.getElementById('uploadBtn');
+  const fileInput = document.getElementById('video');
+  const fileMeta = document.getElementById('fileMeta');
+  const shell = document.getElementById('progressShell');
+  const bar = document.getElementById('progressBar');
+  const text = document.getElementById('progressText');
+  const percent = document.getElementById('progressPercent');
+
+  function formatBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes <= 0) return '';
+    const units = ['B','KB','MB','GB'];
+    let value = bytes, i = 0;
+    while (value >= 1024 && i < units.length - 1) { value /= 1024; i++; }
+    return `${value.toFixed(i > 1 ? 2 : 1)} ${units[i]}`;
+  }
+
+  fileInput.addEventListener('change', () => {
+    const f = fileInput.files?.[0];
+    fileMeta.textContent = f ? `${f.name} · ${formatBytes(f.size)}` : '支持常见 MP4 / MOV / MKV / MTS 等格式。';
+  });
+
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (btn.disabled) return;
+    if (!fileInput.files?.length) return;
+
+    btn.disabled = true;
+    btn.textContent = '正在上传…';
+    shell.style.display = 'block';
+    bar.style.width = '0%';
+    text.textContent = '正在把文件上传到服务器…';
+    percent.textContent = '0%';
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', form.action, true);
+    xhr.upload.addEventListener('progress', (e) => {
+      if (!e.lengthComputable) return;
+      const p = Math.min(100, Math.round((e.loaded / e.total) * 100));
+      bar.style.width = `${p}%`;
+      percent.textContent = `${p}%`;
+      text.textContent = p >= 100 ? '上传完成，服务器正在创建任务…' : `正在上传 ${formatBytes(e.loaded)} / ${formatBytes(e.total)}`;
+    });
+    xhr.addEventListener('load', () => {
+      if (xhr.status >= 200 && xhr.status < 400) {
+        bar.style.width = '100%';
+        percent.textContent = '100%';
+        text.textContent = '已创建转码任务，正在进入管理中心…';
+        window.location.assign(xhr.responseURL || '/admin');
+        return;
+      }
+      btn.disabled = false;
+      btn.textContent = '重新上传';
+      text.textContent = `上传失败：HTTP ${xhr.status}`;
+    });
+    xhr.addEventListener('error', () => {
+      btn.disabled = false;
+      btn.textContent = '重新上传';
+      text.textContent = '网络连接中断，请检查连接后重试。';
+    });
+    xhr.addEventListener('abort', () => {
+      btn.disabled = false;
+      btn.textContent = '重新上传';
+      text.textContent = '上传已取消。';
+    });
+    xhr.send(new FormData(form));
+  });
+</script>
+{% endblock %}

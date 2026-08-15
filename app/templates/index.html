@@ -1,0 +1,280 @@
+{% extends "base.html" %}
+{% block title %}管理中心 · Video Box{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div>
+    <div class="eyebrow">Dashboard</div>
+    <h1 class="page-title">管理中心</h1>
+    <p class="page-subtitle">集中管理视频状态、播放权限、分享链接、二维码和转码详情。</p>
+  </div>
+  <button type="button" class="btn secondary" id="pageRefresh">刷新页面</button>
+</div>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% for category, message in messages %}<div class="notice {{ category }}">{{ message }}</div>{% endfor %}
+{% endwith %}
+
+<div class="summary-grid">
+  <div class="summary-card"><span>全部视频</span><strong>{{ summary.total }}</strong></div>
+  <div class="summary-card"><span>已就绪</span><strong>{{ summary.ready }}</strong></div>
+  <div class="summary-card"><span>处理中</span><strong>{{ summary.processing }}</strong></div>
+  <div class="summary-card"><span>已暂停</span><strong>{{ summary.paused }}</strong></div>
+</div>
+
+<details class="card tool-card">
+  <summary>
+    <div><strong>其他二维码</strong><div class="muted tiny" style="margin-top:4px">为任意外部 URL 生成二维码，不写入视频数据库</div></div>
+  </summary>
+  <div class="external-qr-body">
+    <div class="qr-controls">
+      <div class="field">
+        <label for="externalQrUrl">URL</label>
+        <input id="externalQrUrl" inputmode="url" placeholder="https://example.com/page">
+      </div>
+      <div class="field">
+        <label for="externalQrCaption">二维码下方备注</label>
+        <input id="externalQrCaption" maxlength="160" placeholder="例如：官网、活动报名、案例资料">
+      </div>
+      <div class="compact-actions">
+        <button type="button" class="mini-btn" id="externalQrGenerate">生成 / 更新</button>
+        <a class="mini-btn secondary" id="externalQrSvg" style="display:none" download="external-qr.svg">下载 SVG</a>
+        <button type="button" class="mini-btn secondary" id="externalQrPng" style="display:none">下载 PNG</button>
+      </div>
+    </div>
+    <div class="qr-preview" id="externalQrPreview"><span class="muted">输入 URL 后生成预览</span></div>
+  </div>
+</details>
+
+<section class="card manager-card">
+  <div class="manager-head">
+    <div>
+      <h2 style="margin:0">视频资源</h2>
+      <div class="muted tiny" style="margin-top:6px">
+        {% if public_base_url %}
+          二维码固定使用 <code>{{ public_base_url }}</code>
+        {% else %}
+          未设置 PUBLIC_BASE_URL，二维码会使用当前管理页的域名 / IP / 端口。
+        {% endif %}
+      </div>
+    </div>
+    <div class="search-wrap">
+      <span class="search-icon">⌕</span>
+      <input id="resourceSearch" class="search-input" placeholder="搜索标题、文件名、简介或资源 ID">
+    </div>
+  </div>
+
+  {% if not videos %}
+    <div style="padding:34px 20px;text-align:center">
+      <div style="font-weight:800;margin-bottom:7px">还没有视频资源</div>
+      <div class="muted">先上传一个视频，转码完成后会出现在这里。</div>
+      <div style="margin-top:16px"><a class="btn" href="/">上传视频</a></div>
+    </div>
+  {% else %}
+  <div class="table-wrap">
+    <table class="resource-table">
+      <thead>
+        <tr><th>视频</th><th>状态</th><th>观看</th><th>访问</th><th>操作</th></tr>
+      </thead>
+      <tbody id="resourceRows">
+      {% for v in videos %}
+        <tr class="resource-row" data-search="{{ (v.title ~ ' ' ~ v.original_name ~ ' ' ~ v.slug ~ ' ' ~ v.description)|lower }}">
+          <td class="video-cell">
+            <div class="video-title"><span class="video-dot"></span><span>{{ v.title }}</span></div>
+            <div class="muted ellipsis" style="margin-top:4px">{{ v.original_name }}</div>
+            <div class="tiny muted" style="margin-top:4px">{{ v.slug }} · {{ v.created_at }}</div>
+            {% if v.description %}<div class="tiny desc ellipsis">{{ v.description }}</div>{% endif %}
+          </td>
+          <td>
+            <span class="badge status-{{ v.status }}">
+              {% if v.status == 'ready' %}已就绪{% elif v.status == 'processing' %}转码中{% elif v.status == 'queued' %}排队中{% elif v.status == 'uploading' %}上传中{% elif v.status == 'error' %}失败{% else %}{{ v.status }}{% endif %}
+            </span>
+            {% if v.error %}<div class="tiny error" style="margin-top:5px">查看详情</div>{% endif %}
+          </td>
+          <td><strong>{{ v.views }}</strong><div class="tiny muted">次</div></td>
+          <td><span class="badge {{ 'access-on' if v.access_enabled else 'access-off' }}">{{ '可播放' if v.access_enabled else '已暂停' }}</span></td>
+          <td>
+            <div class="compact-actions">
+              {% if v.status == 'ready' and v.access_enabled %}<a class="mini-btn" href="/v/{{ v.slug }}" target="_blank" rel="noopener">播放</a>{% endif %}
+              <button type="button" class="mini-btn secondary qr-toggle" data-slug="{{ v.slug }}">二维码</button>
+              <form action="/manage/{{ v.slug }}/access" method="post" class="inline-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="return_to" value="dashboard">
+                {% if v.access_enabled %}
+                  <input type="hidden" name="action" value="disable">
+                  <button class="mini-btn danger" type="submit" onclick="return confirm('暂停后这个视频的播放页和视频流都会被阻止，确认继续？')">暂停</button>
+                {% else %}
+                  <input type="hidden" name="action" value="enable">
+                  <button class="mini-btn" type="submit">恢复</button>
+                {% endif %}
+              </form>
+              <a class="mini-btn secondary" href="/manage/{{ v.slug }}">详情 / 日志</a>
+            </div>
+          </td>
+        </tr>
+        <tr class="qr-row" id="qr-row-{{ v.slug }}" style="display:none">
+          <td colspan="5">
+            <div class="inline-qr-panel">
+              <div class="qr-controls">
+                <div class="tiny muted">本次二维码写入地址</div>
+                <code class="share-url">{{ v.share_url }}</code>
+                <div class="field">
+                  <label>二维码下方文字</label>
+                  <input class="qr-caption" data-slug="{{ v.slug }}" maxlength="160" value="{{ v.description or v.title }}" placeholder="例如：视频简介、活动名称、日期">
+                </div>
+                <div class="compact-actions">
+                  <button type="button" class="mini-btn qr-generate" data-slug="{{ v.slug }}">生成 / 更新</button>
+                  <a class="mini-btn secondary qr-svg" data-slug="{{ v.slug }}" style="display:none" download="{{ v.slug }}-qr.svg">下载 SVG</a>
+                  <button type="button" class="mini-btn secondary qr-png" data-slug="{{ v.slug }}" style="display:none">下载 PNG</button>
+                  <button type="button" class="mini-btn secondary copy-link" data-url="{{ v.share_url }}">复制链接</button>
+                </div>
+              </div>
+              <div class="qr-preview" id="qr-preview-{{ v.slug }}"><span class="muted">二维码预览</span></div>
+            </div>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+  document.getElementById('pageRefresh').addEventListener('click', () => window.location.reload());
+  const qrUrls = new Map();
+
+  function showQrPreview(preview, url) {
+    preview.innerHTML = '';
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = '二维码';
+    preview.appendChild(img);
+  }
+
+  function buildQr(slug) {
+    const caption = document.querySelector(`.qr-caption[data-slug="${slug}"]`).value || '';
+    const url = `/qr/${slug}.svg?caption=${encodeURIComponent(caption)}&t=${Date.now()}`;
+    qrUrls.set(slug, url);
+    showQrPreview(document.getElementById(`qr-preview-${slug}`), url);
+    const svg = document.querySelector(`.qr-svg[data-slug="${slug}"]`);
+    svg.href = url;
+    svg.style.display = 'inline-flex';
+    document.querySelector(`.qr-png[data-slug="${slug}"]`).style.display = 'inline-flex';
+    return url;
+  }
+
+  async function downloadPngFromSvg(svgUrl, filename) {
+    try {
+      const res = await fetch(svgUrl, {cache:'no-store'});
+      if (!res.ok) throw new Error(`二维码读取失败：HTTP ${res.status}`);
+      const svgText = await res.text();
+      const svgBlob = new Blob([svgText], {type:'image/svg+xml;charset=utf-8'});
+      const blobUrl = URL.createObjectURL(svgBlob);
+      try {
+        const img = new Image();
+        await new Promise((resolve, reject) => {
+          img.onload = resolve;
+          img.onerror = () => reject(new Error('二维码图片加载失败'));
+          img.src = blobUrl;
+        });
+        const scale = 4;
+        const width = img.naturalWidth || 360;
+        const height = img.naturalHeight || 400;
+        const canvas = document.createElement('canvas');
+        canvas.width = width * scale;
+        canvas.height = height * scale;
+        const ctx = canvas.getContext('2d', {alpha:false});
+        if (!ctx) throw new Error('浏览器无法创建图片画布');
+        ctx.imageSmoothingEnabled = false;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/png');
+        if (!dataUrl.startsWith('data:image/png')) throw new Error('当前浏览器未能导出 PNG');
+        const a = document.createElement('a');
+        a.href = dataUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      } finally {
+        URL.revokeObjectURL(blobUrl);
+      }
+    } catch (err) {
+      alert(`下载 PNG 失败：${err.message || err}`);
+    }
+  }
+
+  document.querySelectorAll('.qr-toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const slug = btn.dataset.slug;
+      const row = document.getElementById(`qr-row-${slug}`);
+      const opening = row.style.display === 'none';
+      document.querySelectorAll('.qr-row').forEach(x => { if (x !== row) x.style.display = 'none'; });
+      row.style.display = opening ? 'table-row' : 'none';
+      if (opening && !qrUrls.has(slug)) buildQr(slug);
+    });
+  });
+  document.querySelectorAll('.qr-generate').forEach(btn => btn.addEventListener('click', () => buildQr(btn.dataset.slug)));
+  document.querySelectorAll('.qr-png').forEach(btn => btn.addEventListener('click', async () => {
+    const slug = btn.dataset.slug;
+    await downloadPngFromSvg(qrUrls.get(slug) || buildQr(slug), `${slug}-qr.png`);
+  }));
+  document.querySelectorAll('.copy-link').forEach(btn => btn.addEventListener('click', async () => {
+    const value = btn.dataset.url;
+    let copied = false;
+    try { if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(value); copied = true; } } catch (_) {}
+    if (!copied) {
+      const area = document.createElement('textarea');
+      area.value = value; area.style.position = 'fixed'; area.style.opacity = '0';
+      document.body.appendChild(area); area.select();
+      try { copied = document.execCommand('copy'); } catch (_) {}
+      area.remove();
+    }
+    const old = btn.textContent;
+    btn.textContent = copied ? '已复制' : '复制失败';
+    setTimeout(() => btn.textContent = old, 1200);
+  }));
+
+  const externalUrlInput = document.getElementById('externalQrUrl');
+  const externalCaptionInput = document.getElementById('externalQrCaption');
+  const externalGenerateBtn = document.getElementById('externalQrGenerate');
+  const externalSvgBtn = document.getElementById('externalQrSvg');
+  const externalPngBtn = document.getElementById('externalQrPng');
+  const externalPreview = document.getElementById('externalQrPreview');
+  let externalQrRoute = '';
+
+  function buildExternalQr() {
+    const rawUrl = (externalUrlInput.value || '').trim();
+    if (!rawUrl) { alert('请先输入 URL。'); externalUrlInput.focus(); return ''; }
+    let parsed;
+    try { parsed = new URL(rawUrl); } catch (_) { alert('URL 格式不正确，请输入完整地址，例如 https://example.com'); return ''; }
+    if (!['http:', 'https:'].includes(parsed.protocol)) { alert('目前仅支持 http:// 或 https:// URL。'); return ''; }
+    const caption = externalCaptionInput.value || '';
+    externalQrRoute = `/qr/external.svg?url=${encodeURIComponent(rawUrl)}&caption=${encodeURIComponent(caption)}&t=${Date.now()}`;
+    showQrPreview(externalPreview, externalQrRoute);
+    externalSvgBtn.href = externalQrRoute;
+    externalSvgBtn.style.display = 'inline-flex';
+    externalPngBtn.style.display = 'inline-flex';
+    return externalQrRoute;
+  }
+
+  externalGenerateBtn.addEventListener('click', buildExternalQr);
+  externalPngBtn.addEventListener('click', async () => {
+    const route = externalQrRoute || buildExternalQr();
+    if (route) await downloadPngFromSvg(route, 'external-qr.png');
+  });
+
+  const search = document.getElementById('resourceSearch');
+  if (search) search.addEventListener('input', () => {
+    const q = search.value.trim().toLowerCase();
+    document.querySelectorAll('.resource-row').forEach(row => {
+      const show = !q || row.dataset.search.includes(q);
+      row.style.display = show ? 'table-row' : 'none';
+      const slug = row.querySelector('.qr-toggle')?.dataset.slug;
+      if (!show && slug) document.getElementById(`qr-row-${slug}`).style.display = 'none';
+    });
+  });
+</script>
+{% endblock %}

@@ -1,0 +1,27 @@
+# Secrets / local configuration
+.env
+.env.*
+!.env.example
+
+# Persistent application data
+data/db/*
+!data/db/.gitkeep
+data/uploads/*
+!data/uploads/.gitkeep
+data/media/*
+!data/media/.gitkeep
+data/logs/*
+!data/logs/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Local backups / editor files
+*.bak
+*.bak.*
+video-box-backup-*.tar.gz
+.DS_Store
+.idea/
+.vscode/
