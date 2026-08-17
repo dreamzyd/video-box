@@ -1,6 +1,6 @@
 services:
   app:
-    image: video-box-app:1.1.0
+    image: video-box-app:1.1.1
     build:
       context: ./app
       args:
@@ -10,7 +10,7 @@ services:
         PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}
     restart: unless-stopped
     environment:
-      APP_VERSION: "1.1.0"
+      APP_VERSION: "1.1.1"
       APP_SECRET: ${APP_SECRET:-change-me-now}
       APP_PASSWORD: ${APP_PASSWORD:-}
       APP_SESSION_HOURS: ${APP_SESSION_HOURS:-12}
@@ -35,7 +35,7 @@ services:
       retries: 3
 
   worker:
-    image: video-box-app:1.1.0
+    image: video-box-app:1.1.1
     build:
       context: ./app
       args:
@@ -45,7 +45,7 @@ services:
         PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}
     restart: unless-stopped
     environment:
-      APP_VERSION: "1.1.0"
+      APP_VERSION: "1.1.1"
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       KEEP_ORIGINAL: ${KEEP_ORIGINAL:-false}
       DB_PATH: /data/db/video.db

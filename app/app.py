@@ -1,6 +1,7 @@
 import hashlib
 import os
 import secrets
+import shutil
 import sqlite3
 import unicodedata
 from datetime import datetime, timedelta
@@ -19,7 +20,7 @@ UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "/data/uploads"))
 MEDIA_DIR = Path(os.getenv("MEDIA_DIR", "/data/media"))
 LOG_DIR = Path(os.getenv("LOG_DIR", "/data/logs"))
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
-APP_VERSION = os.getenv("APP_VERSION", "1.1.0").strip() or "1.1.0"
+APP_VERSION = os.getenv("APP_VERSION", "1.1.1").strip() or "1.1.1"
 APP_PASSWORD = os.getenv("APP_PASSWORD", "").strip() or os.getenv("ADMIN_PASSWORD", "").strip()
 APP_SESSION_HOURS = max(1, int(os.getenv("APP_SESSION_HOURS", os.getenv("ADMIN_SESSION_HOURS", "12"))))
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").strip().lower() in {"1", "true", "yes", "on"}
@@ -199,6 +200,51 @@ def tail_text(path, max_bytes=65536):
         return ""
 
 
+ACTIVE_DELETE_BLOCK_STATUSES = {"uploading", "processing"}
+
+
+def _safe_unlink_upload(path_value):
+    """Delete a pending upload only when it is really inside UPLOAD_DIR."""
+    if not path_value:
+        return
+    candidate = Path(path_value)
+    try:
+        resolved = candidate.resolve(strict=False)
+        root = UPLOAD_DIR.resolve(strict=False)
+        if resolved == root or root not in resolved.parents:
+            raise ValueError(f"拒绝删除 uploads 目录之外的路径：{candidate}")
+        candidate.unlink(missing_ok=True)
+    except FileNotFoundError:
+        return
+
+
+def cleanup_resource_files(slug, input_path=None):
+    """Remove upload temp file, converted media and per-resource logs."""
+    _safe_unlink_upload(input_path)
+    shutil.rmtree(MEDIA_DIR / slug, ignore_errors=False) if (MEDIA_DIR / slug).exists() else None
+    shutil.rmtree(LOG_DIR / slug, ignore_errors=False) if (LOG_DIR / slug).exists() else None
+
+
+def delete_resource_record(table, slug):
+    """Atomically remove a DB record unless a worker is actively processing it."""
+    if table not in {"videos", "documents"}:
+        raise ValueError("invalid resource table")
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            f"SELECT id,slug,title,status,input_path FROM {table} WHERE slug=?", (slug,)
+        ).fetchone()
+        if not row:
+            conn.rollback()
+            return None, "missing"
+        if row["status"] in ACTIVE_DELETE_BLOCK_STATUSES:
+            conn.rollback()
+            return dict(row), "busy"
+        conn.execute(f"DELETE FROM {table} WHERE id=?", (row["id"],))
+        conn.commit()
+        return dict(row), "deleted"
+
+
 def parse_progress(text):
     result = {}
     for line in text.replace("\r", "\n").splitlines():
@@ -347,6 +393,7 @@ def admin_dashboard():
             "public_path": f"/v/{item['slug']}",
             "manage_path": f"/manage/{item['slug']}",
             "access_path": f"/manage/{item['slug']}/access",
+            "delete_path": f"/manage/{item['slug']}/delete",
             "qr_path": f"/qr/{item['slug']}.svg",
         })
         resources.append(item)
@@ -360,6 +407,7 @@ def admin_dashboard():
             "public_path": f"/r/{item['slug']}",
             "manage_path": f"/manage/document/{item['slug']}",
             "access_path": f"/manage/document/{item['slug']}/access",
+            "delete_path": f"/manage/document/{item['slug']}/delete",
             "qr_path": f"/qr/document/{item['slug']}.svg",
         })
         resources.append(item)
@@ -686,6 +734,25 @@ def update_access(slug):
     return redirect(url_for("manage", slug=slug))
 
 
+@app.post("/manage/<slug>/delete")
+@login_required
+def delete_video(slug):
+    require_csrf()
+    row, state = delete_resource_record("videos", slug)
+    if state == "missing":
+        abort(404)
+    if state == "busy":
+        flash("该视频正在上传或转码，当前不能删除。请等待任务结束后再试。", "error")
+        return redirect(url_for("admin_dashboard")), 409
+    try:
+        cleanup_resource_files(slug, row.get("input_path"))
+    except Exception as exc:
+        flash(f"资源记录已删除，但部分文件清理失败，请检查 data/ 目录：{exc}", "error")
+        return redirect(url_for("admin_dashboard"))
+    flash(f"已彻底删除视频“{row['title']}”及其媒体文件、上传临时文件和日志。", "ok")
+    return redirect(url_for("admin_dashboard"))
+
+
 @app.post("/manage/<slug>")
 @login_required
 def update_manage(slug):
@@ -742,6 +809,25 @@ def update_document_access(slug):
     if (request.form.get("return_to") or "").strip() == "dashboard":
         return redirect(url_for("admin_dashboard"))
     return redirect(url_for("manage_document", slug=slug))
+
+
+@app.post("/manage/document/<slug>/delete")
+@login_required
+def delete_document(slug):
+    require_csrf()
+    row, state = delete_resource_record("documents", slug)
+    if state == "missing":
+        abort(404)
+    if state == "busy":
+        flash("该文档正在上传或处理，当前不能删除。请等待任务结束后再试。", "error")
+        return redirect(url_for("admin_dashboard")), 409
+    try:
+        cleanup_resource_files(slug, row.get("input_path"))
+    except Exception as exc:
+        flash(f"资源记录已删除，但部分文件清理失败，请检查 data/ 目录：{exc}", "error")
+        return redirect(url_for("admin_dashboard"))
+    flash(f"已彻底删除文档“{row['title']}”及其转换文件、原文件副本、上传临时文件和日志。", "ok")
+    return redirect(url_for("admin_dashboard"))
 
 
 @app.post("/manage/document/<slug>")

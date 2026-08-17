@@ -117,6 +117,12 @@
                 {% endif %}
               </form>
               <a class="mini-btn secondary" href="{{ r.manage_path }}">详情 / 日志</a>
+              <form action="{{ r.delete_path }}" method="post" class="inline-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="mini-btn danger delete-resource-btn"
+                  data-title="{{ r.title }}" data-kind="{{ r.kind_label }}"
+                  {% if r.status in ['uploading','processing'] %}disabled title="正在处理的资源暂不能删除"{% endif %}>删除</button>
+              </form>
             </div>
           </td>
         </tr>
@@ -152,6 +158,19 @@
 <script>
   document.getElementById('pageRefresh').addEventListener('click', () => window.location.reload());
   const qrUrls = new Map();
+
+  function confirmResourceDelete(button) {
+    const title = button.dataset.title || '该资源';
+    const kind = button.dataset.kind || '资源';
+    if (!confirm(`第一次确认：确定要删除${kind}“${title}”吗？\n\n删除后公开链接和二维码将立即失效。`)) return false;
+    return confirm(`第二次确认：这会同时删除数据库记录、媒体/转换文件、上传临时文件和日志，且无法恢复。\n\n确认彻底删除“${title}”？`);
+  }
+
+  document.querySelectorAll('.delete-resource-btn').forEach(btn => {
+    btn.addEventListener('click', (event) => {
+      if (!confirmResourceDelete(btn)) event.preventDefault();
+    });
+  });
 
   function showQrPreview(preview, url) {
     preview.innerHTML = '';

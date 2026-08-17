@@ -32,10 +32,14 @@
 
     <div class="field">
       <label for="resource">文件</label>
-      <div class="file-shell">
-        <input id="resource" type="file" name="resource"
+      <div class="upload-dropzone" id="uploadDropzone" tabindex="0" role="button" aria-label="选择或拖拽文件上传">
+        <input id="resource" class="dropzone-input" type="file" name="resource"
           accept="video/*,.mkv,.mov,.m2ts,.mts,.pdf,.doc,.docx,.odt,.ppt,.pptx,.odp,.xls,.xlsx,.ods" required>
-        <div class="field-help" id="fileMeta">支持视频、PDF、Word、PowerPoint、Excel；Office 文档会转换为 PDF 并生成手机阅读页。</div>
+        <div class="dropzone-icon" aria-hidden="true">⇧</div>
+        <div class="dropzone-title">拖拽文件到这里上传</div>
+        <div class="dropzone-copy">或点击此区域选择文件</div>
+        <div class="dropzone-types">视频 · PDF · Word · PowerPoint · Excel</div>
+        <div class="dropzone-selected" id="fileMeta">尚未选择文件</div>
       </div>
     </div>
 
@@ -76,6 +80,7 @@
   const form = document.getElementById('uploadForm');
   const btn = document.getElementById('uploadBtn');
   const fileInput = document.getElementById('resource');
+  const dropzone = document.getElementById('uploadDropzone');
   const fileMeta = document.getElementById('fileMeta');
   const videoOptions = document.getElementById('videoOptions');
   const documentOptions = document.getElementById('documentOptions');
@@ -103,10 +108,11 @@
     return 'unknown';
   }
 
-  fileInput.addEventListener('change', () => {
+  function updateSelectedFile() {
     const f = fileInput.files?.[0];
     if (!f) {
-      fileMeta.textContent = '支持视频、PDF、Word、PowerPoint、Excel；Office 文档会转换为 PDF 并生成手机阅读页。';
+      fileMeta.textContent = '尚未选择文件';
+      dropzone.classList.remove('has-file');
       videoOptions.style.display = 'none';
       documentOptions.style.display = 'none';
       return;
@@ -114,8 +120,36 @@
     const kind = classify(f.name);
     const label = kind === 'video' ? '视频' : kind === 'document' ? '文档' : '未知格式';
     fileMeta.textContent = `${f.name} · ${formatBytes(f.size)} · ${label}`;
+    dropzone.classList.add('has-file');
     videoOptions.style.display = kind === 'video' ? 'block' : 'none';
     documentOptions.style.display = kind === 'document' ? 'block' : 'none';
+  }
+
+  fileInput.addEventListener('change', updateSelectedFile);
+
+  ['dragenter','dragover'].forEach(name => dropzone.addEventListener(name, (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    dropzone.classList.add('is-dragging');
+  }));
+  ['dragleave','drop'].forEach(name => dropzone.addEventListener(name, (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    dropzone.classList.remove('is-dragging');
+  }));
+  dropzone.addEventListener('drop', (event) => {
+    const files = event.dataTransfer?.files;
+    if (!files?.length) return;
+    const dt = new DataTransfer();
+    dt.items.add(files[0]);
+    fileInput.files = dt.files;
+    updateSelectedFile();
+  });
+  dropzone.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      fileInput.click();
+    }
   });
 
   form.addEventListener('submit', (event) => {

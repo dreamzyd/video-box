@@ -50,6 +50,20 @@
   <div class="row"><div class="grow"><h2 class="card-title">文档处理日志</h2><p class="card-copy">事件、LibreOffice 转换和 PDF 页面渲染日志保存在 <code>data/logs/{{ document.slug }}/</code>。</p></div><button type="button" class="secondary" id="refreshLogs">刷新日志</button></div>
   <div class="divider"></div><h3 style="font-size:.9rem">任务事件</h3><pre id="eventLog" class="logbox">加载中…</pre><h3 style="font-size:.9rem;margin-top:18px">Office 转 PDF</h3><pre id="convertLog" class="logbox">加载中…</pre><h3 style="font-size:.9rem;margin-top:18px">PDF 页面渲染</h3><pre id="renderLog" class="logbox">加载中…</pre>
 </section>
+<section class="card danger-zone">
+  <div class="row">
+    <div class="grow">
+      <h2 class="card-title">删除资源</h2>
+      <p class="card-copy">彻底删除后，公开阅读地址和已有二维码会立即失效，同时删除转换后的 PDF、手机阅读页、原文件副本、上传临时文件和日志。此操作无法恢复。</p>
+    </div>
+    <form action="/manage/document/{{ document.slug }}/delete" method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="danger" {% if document.status in ['uploading','processing'] %}disabled title="正在上传或处理，暂不能删除"{% endif %}
+        onclick="return confirm('第一次确认：确定删除这个文档吗？删除后二维码会失效。') && confirm('第二次确认：将同时删除文档文件、阅读页、日志和数据库记录，且无法恢复。确认继续？')">彻底删除文档</button>
+    </form>
+  </div>
+</section>
+
 {% endblock %}
 {% block scripts %}
 <script>
