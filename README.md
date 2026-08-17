@@ -1,62 +1,130 @@
-# Video Box 1.0
+# Video Box 1.1.0
 
-一个面向小型 Linux 服务器的轻量视频上传、自动转码、公开播放、二维码分享与资源管理工具。
+Video Box 是一个面向小型 Linux 服务器的轻量资源上传、处理、公开浏览、二维码分享与访问管理工具。
 
-默认按 **2 核 / 2 GB 内存** 的小型服务器设计：单 Worker 串行转码，视频统一转为适合手机和浏览器播放的 H.264 + AAC MP4。
+1.1.0 在保持 1.0 视频功能和历史链接完全兼容的前提下，新增 PDF / Word / PowerPoint / Excel 文档处理。默认仍按 **2 核 / 2 GB 内存** 的小型服务器设计：只有一个 Worker，视频转码和文档转换串行执行。
 
-> **安全默认值**：1.0 默认只监听 `127.0.0.1:8080`，不会直接把 8080 端口暴露到公网。推荐通过 SSH 隧道使用，或者由宿主机 Nginx/Caddy 反向代理。确实需要直接开放时再设置 `BIND_ADDRESS=0.0.0.0`。
+> **安全默认值**：默认只监听 `127.0.0.1:8080`，不会直接把 8080 暴露到公网。推荐通过 SSH 隧道，或宿主机 Nginx / Caddy 反向代理。
 
-## 功能
+> **升级兼容重点**：1.0 已存在的视频 `slug`、SQLite `videos` 表、`/v/<slug>`、`/stream/<slug>`、`/qr/<slug>.svg` 全部保留。1.1.0 只新增 `documents` 表和 `/r/<slug>` 文档阅读入口，**已有视频二维码无需重新生成**。
 
-- 登录后上传视频，支持上传进度显示与重复提交保护。
-- FFmpeg 自动转码为 H.264 + AAC MP4，支持横屏、竖屏和自动方向。
-- 上传完成后自动回到统一管理中心。
-- 公开视频使用简洁的全屏播放器，观看者不需要登录。
-- 资源可随时暂停 / 恢复访问，原播放链接和原二维码不变。
-- Nginx 通过 `X-Accel-Redirect` 发送视频，大文件不经过 Python 进程转发。
-- 统一管理所有视频：状态、观看次数、播放、二维码、暂停/恢复、详情和日志。
-- 二维码按需生成，支持自定义下方备注，支持 SVG / PNG 下载。
-- 支持为任意外部 URL 生成临时二维码。
-- 每个视频保存任务事件、FFmpeg 输出和转码进度日志。
-- SQLite 持久化，无需额外部署 MySQL / Redis。
-- 国内构建默认使用阿里云 Debian / PyPI 镜像，可在 `.env` 切换。
+## 1.1.0 新增功能
+
+- 上传 PDF、Word、PowerPoint、Excel / OpenDocument 文件。
+- PDF 直接处理；Office 文档通过 LibreOffice Headless 转换为 PDF。
+- PDF 再渲染为逐页 JPEG，手机端使用连续纵向页面阅读，不依赖客户端 Office，也不依赖外部 PDF.js CDN。
+- 文档公开地址使用 `/r/<资源ID>`，扫码后手机直接阅读。
+- 文档与视频共用统一管理中心、二维码、暂停 / 恢复、浏览次数与日志体系。
+- 文档可以单独控制是否允许公开下载原文件；Office 文档允许下载时也可下载转换后的 PDF。
+- 中文 / Unicode 原文件名完整保留用于后台显示与下载；实际磁盘文件仍使用随机资源 ID，避免特殊字符影响路径。
+- 上传请求优先使用 `X-CSRF-Token` 校验，可在解析大文件前尽早发现过期登录会话。
+
+## 支持格式
+
+### 视频
+
+`mp4`、`mov`、`m4v`、`avi`、`mkv`、`webm`、`mpeg`、`mpg`、`mts`、`m2ts`、`3gp`
+
+视频统一转为：
+
+- H.264 / libx264
+- AAC
+- MP4 + faststart
+- 自动保持横屏 / 竖屏，或手动强制 16:9 / 9:16
+
+### 文档
+
+- PDF：`.pdf`
+- Word：`.doc` `.docx` `.odt`
+- PowerPoint：`.ppt` `.pptx` `.odp`
+- Excel：`.xls` `.xlsx` `.ods`
+
+处理链路：
+
+```text
+PDF
+ └─→ PDF → 页面 JPEG → 手机连续阅读
+
+Word / PowerPoint / Excel
+ └─→ LibreOffice Headless → PDF → 页面 JPEG → 手机连续阅读
+```
 
 ## 权限模型
 
 | 路径 / 功能 | 是否需要登录 |
 |---|---|
-| `/` 上传页 | 是 |
+| `/` 上传资源 | 是 |
 | `/upload` 上传动作 | 是 |
 | `/admin` 管理中心 | 是 |
-| `/manage/<slug>` 详情 / 日志 | 是 |
-| 生成二维码、暂停 / 恢复资源 | 是 |
-| `/v/<slug>` 播放页 | **否** |
-| `/stream/<slug>` 视频流 | **否** |
-| `/poster/<slug>` 封面 | **否** |
+| `/manage/<slug>` 视频详情 / 日志 | 是 |
+| `/manage/document/<slug>` 文档详情 / 日志 | 是 |
+| 二维码、暂停 / 恢复、修改资源 | 是 |
+| `/v/<slug>` 视频播放 | 否 |
+| `/stream/<slug>` 视频流 | 否 |
+| `/r/<slug>` 文档阅读 | 否 |
+| `/document/<slug>/page/<n>` 文档页面 | 否 |
+| 文档原文件 / PDF 下载 | 仅当管理员开启“允许下载” |
 
-公开视频虽然不要求密码，但仍受“暂停访问”控制。资源暂停后，播放页、视频流和封面都会被阻止；恢复后原 URL 和原二维码继续有效。
+公开资源都受“暂停访问”控制。暂停后内容被阻止；恢复后原 URL 和原二维码继续有效。
+
+## 与 1.0 的兼容关系
+
+1.0 的视频 URL 保持不变：
+
+```text
+https://video.example.com/v/fsCFsRsNZ5Ss
+```
+
+1.1.0 **不会**把它改成 `/r/`，也不会重新生成 `slug`。
+
+新文档使用：
+
+```text
+https://video.example.com/r/AbCd12345678
+```
+
+数据库仍然使用原文件：
+
+```text
+data/db/video.db
+```
+
+但在同一个 SQLite 文件中新增：
+
+```text
+videos       # 原表，历史视频继续使用
+documents    # 1.1.0 新表
+```
 
 ## 架构
 
 ```text
-浏览器
-  │
-  ▼
+浏览器 / 手机
+      │
+      ▼
 宿主机 127.0.0.1:8080（默认）
-  │
-  ▼
+      │
+      ▼
 Docker Nginx
-  ├─ Web 请求 ──────────────► Flask / Gunicorn
-  │                            ├─ 登录 / 上传 / 管理
-  │                            ├─ SQLite
-  │                            └─ 二维码
-  │
-  └─ 受保护视频流 ◄─ X-Accel-Redirect
-                               ▲
-                               │
-                         FFmpeg Worker
-                               │
-                      data/uploads → data/media
+      ├─ Web / 权限判断 ─────────► Flask / Gunicorn
+      │                              ├─ 登录 / 上传 / 管理
+      │                              ├─ SQLite
+      │                              └─ 二维码
+      │
+      └─ X-Accel-Redirect ◄──────── 受保护媒体文件
+                                     ▲
+                                     │
+                               单 Worker 串行处理
+                             ┌───────┴─────────┐
+                             │                 │
+                          FFmpeg          LibreOffice
+                           视频              Office
+                             │                 │
+                             └──────┬──────────┘
+                                    ▼
+                              PDF / pdftoppm
+                                    ▼
+                       data/uploads → data/media
 ```
 
 ## 快速部署
@@ -64,7 +132,7 @@ Docker Nginx
 目标环境建议：Ubuntu 22.04 LTS + Docker Engine + Docker Compose plugin。
 
 ```bash
-git clone <你的仓库地址> video-box
+git clone https://github.com/dreamzyd/video-box.git
 cd video-box
 chmod +x deploy.sh
 ./deploy.sh
@@ -75,47 +143,39 @@ chmod +x deploy.sh
 1. 从 `.env.example` 创建 `.env`；
 2. 自动生成 `APP_SECRET`；
 3. 自动生成上传 / 管理登录口令 `APP_PASSWORD`；
-4. 创建 `data/` 持久化目录；
-5. 构建镜像并启动 `app`、`worker`、`nginx`。
+4. 创建持久化目录；
+5. 构建并启动 `app`、`worker`、`nginx`。
 
-首次生成的登录口令会打印在终端，请保存好。
+> 1.1.0 的 Docker 镜像新增 LibreOffice、Poppler 和 Noto CJK 字体，**第一次升级构建会比 1.0 明显更大、更慢**。后续代码升级通常可以复用 Docker 层缓存。
 
-### 默认如何访问
+## 默认访问方式
 
-1.0 默认：
+默认 `.env`：
 
 ```env
 BIND_ADDRESS=127.0.0.1
 VIDEO_PORT=8080
 ```
 
-因此服务器公网 IP 的 `:8080` **默认访问不到**。
+公网不能直接访问 `IP:8080`。
 
-最简单的远程使用方式是 SSH 隧道：
+SSH 隧道：
 
 ```bash
 ssh -L 8080:127.0.0.1:8080 user@your-server
 ```
 
-然后在自己的电脑打开：
+本机访问：
 
 ```text
 http://127.0.0.1:8080/
-```
-
-管理中心：
-
-```text
 http://127.0.0.1:8080/admin
 ```
 
-### 直接开放端口
-
-明确需要直接通过服务器 IP 访问时，在 `.env` 修改：
+明确需要直接开放端口时：
 
 ```env
 BIND_ADDRESS=0.0.0.0
-VIDEO_PORT=8080
 ```
 
 然后：
@@ -124,18 +184,9 @@ VIDEO_PORT=8080
 docker compose up -d
 ```
 
-此时还需要按你的云服务器 / 防火墙策略决定是否放行 8080。
-
 ## 宿主机 Nginx 反向代理
 
-推荐继续让 Docker 只监听：
-
-```env
-BIND_ADDRESS=127.0.0.1
-VIDEO_PORT=8080
-```
-
-宿主机 Nginx 反代：
+推荐 Docker 仍然只监听 `127.0.0.1`：
 
 ```nginx
 server {
@@ -160,7 +211,7 @@ server {
 }
 ```
 
-项目里也提供了示例：`docs/nginx-reverse-proxy.conf.example`。
+项目里另有 `docs/nginx-reverse-proxy.conf.example`。
 
 启用 HTTPS 后建议：
 
@@ -169,202 +220,232 @@ PUBLIC_BASE_URL=https://video.example.com
 COOKIE_SECURE=true
 ```
 
-## 二维码与地址规则
+## 二维码规则
 
-本站视频二维码实际编码的是完整播放地址，例如：
+### 历史视频
+
+仍然编码：
+
+```text
+https://video.example.com/v/<slug>
+```
+
+1.1.0 没有改变这个规则。
+
+### 新文档
+
+编码：
+
+```text
+https://video.example.com/r/<slug>
+```
+
+二维码按需生成，支持 SVG / PNG 和下方自定义备注。
+
+如果 `PUBLIC_BASE_URL` 留空，则按生成二维码时管理页面当前访问的域名 / IP / 端口生成。通过 SSH 隧道管理时，建议设置一个手机真正能访问的 `PUBLIC_BASE_URL`，否则二维码可能写入 `127.0.0.1`。
+
+## 文档手机阅读方式
+
+Video Box 不要求手机安装 Word / PowerPoint / Excel，也不直接依赖手机浏览器原生 PDF 阅读器。
+
+处理完成后：
+
+```text
+data/media/<slug>/
+├── document.pdf
+├── original.docx       # 默认保留，可按资源决定是否开放下载
+└── pages/
+    ├── page-1.jpg
+    ├── page-2.jpg
+    └── ...
+```
+
+公开 `/r/<slug>` 页面会纵向连续展示这些页面图片，并对后面的页面使用浏览器 lazy loading。手机可以直接上下滑动、双指缩放页面。
+
+### 字体说明
+
+Docker 安装 `fonts-noto-cjk` 作为中文字体兜底。普通 Word / PPT / Excel 文档通常可以获得较稳定的中文排版，但 LibreOffice 与 Microsoft Office 并非完全相同，特殊字体、宏、复杂文本框、嵌入对象或非常复杂的 Excel 打印区域仍可能出现排版差异。
+
+## 文档参数
+
+`.env`：
+
+```env
+KEEP_DOCUMENT_ORIGINAL=true
+DOCUMENT_RENDER_DPI=120
+DOCUMENT_JPEG_QUALITY=82
+```
+
+- `KEEP_DOCUMENT_ORIGINAL=true`：转换完成后在 `data/media/<slug>/` 保留原文件。推荐保持开启。
+- `DOCUMENT_RENDER_DPI=120`：页面图片渲染清晰度。越大越清晰，也越占磁盘和处理时间。
+- `DOCUMENT_JPEG_QUALITY=82`：页面 JPEG 质量。
+
+## 视频参数
+
+```env
+KEEP_ORIGINAL=false
+FFMPEG_THREADS=1
+VIDEO_CRF=24
+VIDEO_PRESET=veryfast
+```
+
+2 核 / 2G 建议继续保持单 Worker 和 `FFMPEG_THREADS=1`。
+
+## 数据目录
+
+```text
+data/
+├── db/
+│   └── video.db
+├── uploads/
+├── media/
+│   ├── <video-slug>/
+│   │   ├── video.mp4
+│   │   └── poster.jpg
+│   └── <document-slug>/
+│       ├── document.pdf
+│       ├── original.<ext>
+│       └── pages/
+│           ├── page-1.jpg
+│           └── ...
+└── logs/
+    └── <slug>/
+        ├── events.log
+        ├── ffmpeg.log      # 视频
+        ├── progress.log    # 视频
+        ├── convert.log     # Office 文档
+        └── render.log      # PDF 页面渲染
+```
+
+`.gitignore` 排除 `.env`、数据库、上传文件、转换结果与日志。
+
+## 从 1.0 升级到 1.1.0
+
+这是最重要的部署流程。**不要删除 `.env`，不要删除 `data/`。**
+
+### 1. 先确认当前代码和备份
+
+```bash
+cd /path/to/video-box
+git status
+git rev-parse --short HEAD
+```
+
+建议停服后完整备份：
+
+```bash
+docker compose down
+tar czf ../video-box-backup-$(date +%Y%m%d-%H%M%S).tar.gz .env data/
+```
+
+最低限度也应备份数据库：
+
+```bash
+cp data/db/video.db data/db/video.db.bak.$(date +%Y%m%d-%H%M%S)
+```
+
+### 2. 更新代码
+
+如果代码已经提交 Git：
+
+```bash
+git pull
+```
+
+### 3. 构建并启动
+
+由于 1.1.0 新增 LibreOffice / Poppler，需要重建 app/worker 镜像：
+
+```bash
+docker compose build app worker
+docker compose up -d
+docker compose ps
+```
+
+通常不要加 `--no-cache`。
+
+### 4. 验证旧二维码
+
+先取一个正在使用的历史地址，例如：
 
 ```text
 https://video.example.com/v/fsCFsRsNZ5Ss
 ```
 
-资源 ID `/v/fsCFsRsNZ5Ss` 本身不会因为重启或重新构建 Docker 而变化，只要数据库和媒体文件仍然保留。
+升级前后都应继续直接播放。
 
-### `PUBLIC_BASE_URL` 留空
+再登录 `/admin`，确认历史视频标题、观看次数、暂停状态仍存在。
 
-系统会根据**生成二维码时当前管理页面的访问地址**产生 URL。
+### 5. 验证新文档
 
-例如从：
+依次测试：
 
-```text
-http://10.0.0.8:8080/admin
-```
+- PDF
+- 中文文件名 `.docx`
+- PPTX
+- XLSX
 
-生成，则二维码可能写入：
+处理完成后打开 `/r/<slug>` 检查手机排版。
 
-```text
-http://10.0.0.8:8080/v/xxxxx
-```
+## 升级为什么不会破坏旧二维码
 
-### 设置 `PUBLIC_BASE_URL`
+核心原因：
 
-如果已经确定长期地址：
+1. 不重建 `videos` 表；
+2. 不修改旧 `slug`；
+3. 不修改 `/v/<slug>` 路由；
+4. 不修改 `/stream/<slug>` 路由；
+5. 原 `/qr/<slug>.svg` 仍然只生成视频 `/v/<slug>` 地址；
+6. 文档使用独立 `documents` 表和 `/r/<slug>`。
 
-```env
-PUBLIC_BASE_URL=https://video.example.com
-```
-
-之后无论从 SSH 隧道、IP 还是域名进入后台，本站视频二维码都固定使用：
-
-```text
-https://video.example.com/v/xxxxx
-```
-
-> 注意：已经下载或打印出来的旧二维码不会自动改变内容。更换域名后需要重新生成二维码，除非旧地址仍能跳转到新地址。
-
-### SSH 隧道下生成二维码
-
-如果通过 `http://127.0.0.1:8080` 的 SSH 隧道管理，并且 `PUBLIC_BASE_URL` 留空，那么二维码也会写入 `127.0.0.1`，手机扫码无法访问服务器。
-
-要让二维码能被手机使用，需要给视频提供手机可访问的地址，并设置 `PUBLIC_BASE_URL`，或者通过对应的公网反代地址进入管理后台。
-
-## 视频转码
-
-上传后状态通常经历：
-
-```text
-uploading → queued → processing → ready
-```
-
-失败则：
-
-```text
-error
-```
-
-默认转码策略：
-
-- 视频：H.264 / libx264
-- 音频：AAC
-- 输出：MP4 + faststart
-- 自动方向：横屏保持横屏，竖屏保持竖屏
-- 强制横屏：1280×720，不裁切
-- 强制竖屏：720×1280，不裁切
-- 默认 `FFMPEG_THREADS=1`
-- 默认只启动一个 Worker，避免 2 核 2G 机器并行跑多个 FFmpeg
-
-主要参数：
-
-```env
-FFMPEG_THREADS=1
-VIDEO_CRF=24
-VIDEO_PRESET=veryfast
-KEEP_ORIGINAL=false
-```
-
-`KEEP_ORIGINAL=false` 表示转码成功后删除原上传文件，仅保留最终 MP4、封面和日志。
-
-## 关键配置
-
-| 变量 | 默认值 | 说明 |
-|---|---:|---|
-| `BIND_ADDRESS` | `127.0.0.1` | Docker 对宿主机监听地址 |
-| `VIDEO_PORT` | `8080` | 服务端口 |
-| `APP_PASSWORD` | 首次部署自动生成 | 上传 + 管理登录口令 |
-| `APP_SECRET` | 首次部署自动生成 | Flask Session 签名密钥，不是登录密码 |
-| `APP_SESSION_HOURS` | `12` | 登录有效时间 |
-| `COOKIE_SECURE` | `false` | 外层 HTTPS 时建议 `true` |
-| `PUBLIC_BASE_URL` | 空 | 固定公开视频 / 二维码基础 URL |
-| `MAX_UPLOAD_GB` | `5` | Flask 上传大小限制 |
-| `CLIENT_MAX_BODY_SIZE` | `5g` | Nginx 上传大小限制 |
-| `KEEP_ORIGINAL` | `false` | 是否保留原始视频 |
-| `FFMPEG_THREADS` | `1` | FFmpeg 线程数 |
-| `VIDEO_CRF` | `24` | H.264 质量 / 压缩参数 |
-| `VIDEO_PRESET` | `veryfast` | x264 编码速度参数 |
-
-### `APP_SECRET` 是什么
-
-`APP_SECRET` 用于给 Flask 登录 Session Cookie 和 flash 消息签名。它不是管理员需要输入的密码。
-
-- `APP_PASSWORD`：人输入，用来登录上传页和管理中心。
-- `APP_SECRET`：程序内部使用，不需要记忆，但必须保密。
-
-修改 `APP_SECRET` 不会改变视频、数据库或播放 URL，但会让所有已经登录的浏览器 Session 立即失效，需要重新登录。
-
-## 数据与目录
-
-```text
-data/
-├── db/
-│   └── video.db            SQLite 数据库
-├── uploads/                待处理原始上传
-├── media/
-│   └── <slug>/
-│       ├── video.mp4       最终视频
-│       └── poster.jpg      封面
-└── logs/
-    └── <slug>/
-        ├── events.log      任务事件
-        ├── ffmpeg.log      FFmpeg 输出
-        ├── progress.log    转码进度
-        └── poster.log      封面生成日志
-```
-
-`.gitignore` 已经排除 `.env`、数据库、上传文件、视频和日志，只保留目录中的 `.gitkeep`。
+所以已有二维码只要原域名仍然可访问，就与 1.0 一样继续有效。
 
 ## 常用运维命令
 
-查看容器：
-
 ```bash
+# 查看容器
 docker compose ps
-```
 
-查看应用日志：
-
-```bash
+# Web 日志
 docker compose logs -f app
-```
 
-查看转码 Worker：
-
-```bash
+# 视频 / 文档 Worker
 docker compose logs -f worker
-```
 
-查看 Nginx：
-
-```bash
+# Nginx
 docker compose logs -f nginx
-```
 
-重启：
-
-```bash
+# 重启
 docker compose restart
-```
 
-停止：
-
-```bash
+# 停止
 docker compose down
 ```
 
-更新代码后重新构建 Web 应用：
+如果只改 Web 模板 / Flask：
 
 ```bash
 docker compose build app
 docker compose up -d
 ```
 
-如果 `worker.py`、FFmpeg 配置或 Python 依赖也变化，则：
+如果改了 Worker、Dockerfile、FFmpeg、LibreOffice 或文档转换：
 
 ```bash
 docker compose build app worker
 docker compose up -d
 ```
 
-一般升级**不要随便使用 `--no-cache`**，否则会重新下载 FFmpeg 等大量 Debian 软件包。
-
 ## 备份与恢复
 
-最低限度请备份：
+至少备份：
 
 ```text
 .env
 data/
 ```
 
-推荐停服后整体备份：
+完整备份：
 
 ```bash
 docker compose down
@@ -372,111 +453,14 @@ tar czf video-box-backup-$(date +%Y%m%d-%H%M%S).tar.gz .env data/
 docker compose up -d
 ```
 
-只备份 SQLite：
+恢复时应恢复 `.env` 和整个 `data/`，尤其是 `data/db/video.db` 与 `data/media/`。
 
-```bash
-cp data/db/video.db data/db/video.db.bak.$(date +%Y%m%d-%H%M%S)
-```
+## 版本基线
 
-## 从 v6.3 升级到 1.0
-
-1. 先备份：
-
-```bash
-cp data/db/video.db data/db/video.db.bak.$(date +%Y%m%d-%H%M%S)
-cp .env .env.bak.$(date +%Y%m%d-%H%M%S)
-```
-
-2. 停止旧版本：
-
-```bash
-docker compose down
-```
-
-3. 用 1.0 代码覆盖程序文件，**保留原 `.env` 和整个 `data/` 目录**。
-
-4. 执行：
-
-```bash
-./deploy.sh
-```
-
-旧 `.env` 没有 `BIND_ADDRESS` 时，1.0 会自动采用并写入：
-
-```env
-BIND_ADDRESS=127.0.0.1
-```
-
-因此升级后默认不再直接对公网暴露 8080。若你之前就是依靠公网 `IP:8080` 访问，需要明确改成：
-
-```env
-BIND_ADDRESS=0.0.0.0
-```
-
-已有数据库会继续使用，不需要重新上传或重新转码。
-
-## 保存到 Git
-
-本项目已经准备好 `.gitignore` 和 `.gitattributes`。如果当前目录还不是 Git 仓库：
-
-```bash
-git init
-git add .
-git commit -m "release: Video Box 1.0"
-git tag v1.0
-```
-
-如果已经有仓库：
-
-```bash
-git add .
-git commit -m "release: Video Box 1.0"
-git tag v1.0
-```
-
-推送前建议执行：
-
-```bash
-git status
-```
-
-确认 `.env`、`data/db/video.db`、媒体文件和日志没有被加入版本控制。
-
-## 项目结构
+1.1.0 的开发基线为仓库 `dreamzyd/video-box` 当时的 `main`：
 
 ```text
-video-box/
-├── app/
-│   ├── Dockerfile
-│   ├── .dockerignore
-│   ├── app.py
-│   ├── db.py
-│   ├── worker.py
-│   ├── requirements.txt
-│   └── templates/
-├── data/
-│   ├── db/
-│   ├── uploads/
-│   ├── media/
-│   └── logs/
-├── docs/
-│   └── nginx-reverse-proxy.conf.example
-├── nginx/
-│   └── default.conf.template
-├── .env.example
-├── .gitignore
-├── .gitattributes
-├── CHANGELOG.md
-├── SECURITY.md
-├── VERSION
-├── docker-compose.yml
-└── deploy.sh
+6089fe7  fix: preserve video extension for Chinese filenames
 ```
 
-## 1.0 设计原则
-
-- **默认安全**：Docker 端口仅绑定本地。
-- **观看简单**：公开视频保持无登录、纯净播放器。
-- **管理集中**：上传、资源状态、二维码和访问控制集中在管理工作台。
-- **小机可跑**：尽量减少常驻组件和并行转码。
-- **数据可迁移**：业务数据全部落在 `.env` + `data/`，重建容器不丢视频。
+该提交相对初始 1.0 只修改了 `app/app.py` 的中文文件名扩展名处理；1.1.0 在这个基线上继续扩展。

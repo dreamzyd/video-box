@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}{{ document.title }} · Video Box{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div>
+    <div class="eyebrow">Document</div>
+    <h1 class="page-title">{{ document.title }}</h1>
+    <p class="page-subtitle">{{ document.original_name }} · {{ document.type_label }} · {{ document.created_at }} · {{ document.views }} 次阅读</p>
+  </div>
+  <div class="compact-actions">
+    <a class="btn secondary" href="/admin">返回管理中心</a>
+    <button type="button" class="btn secondary" onclick="window.location.reload()">刷新页面</button>
+    {% if document.access_enabled and document.status == 'ready' %}<a class="btn" href="/r/{{ document.slug }}" target="_blank" rel="noopener">打开阅读页</a>{% endif %}
+  </div>
+</div>
+
+{% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div class="notice {{ category }}">{{ message }}</div>{% endfor %}{% endwith %}
+
+<section class="card">
+  <div class="row"><div class="grow"><div class="tiny muted">资源状态</div><div style="margin-top:7px"><span id="status" class="badge status-{{ document.status }}">{% if document.status == 'ready' %}已就绪{% elif document.status == 'processing' %}处理中{% elif document.status == 'queued' %}排队中{% elif document.status == 'uploading' %}上传中{% elif document.status == 'error' %}失败{% else %}{{ document.status }}{% endif %}</span></div><div class="muted tiny" id="progressText" style="margin-top:8px">{% if document.page_count %}已生成 {{ document.page_count }} 页手机阅读页{% endif %}</div></div><div class="tiny muted">资源 ID<br><code>{{ document.slug }}</code></div></div>
+  {% if document.error %}<div class="notice error" style="margin-bottom:0">{{ document.error }}</div>{% endif %}
+</section>
+
+<section class="card access-card {{ '' if document.access_enabled else 'paused' }}">
+  <div class="row"><div class="grow"><h2 class="card-title">访问控制</h2>{% if document.access_enabled %}<p class="card-copy"><span class="ok"><strong>当前允许公开阅读。</strong></span> 暂停后阅读页、页面图片和下载都会被拦截；恢复后原链接和原二维码继续有效。</p>{% else %}<p class="card-copy"><span class="error"><strong>当前已暂停公开阅读。</strong></span> 文件仍保留在服务器，只是外部无法访问。</p>{% endif %}</div>
+    <form action="/manage/document/{{ document.slug }}/access" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% if document.access_enabled %}<input type="hidden" name="action" value="disable"><button type="submit" class="danger" onclick="return confirm('确认暂停这个文档的外部访问？文件不会被删除。')">暂停访问</button>{% else %}<input type="hidden" name="action" value="enable"><button type="submit">恢复访问</button>{% endif %}</form>
+  </div>
+</section>
+
+<section class="card">
+  <h2 class="card-title">标题、简介与下载</h2><p class="card-copy" style="margin-bottom:18px">公开阅读无需登录；是否允许下载原文件由这里单独控制。</p>
+  <form action="/manage/document/{{ document.slug }}" method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="field"><label>标题</label><input name="title" maxlength="200" value="{{ document.title }}"></div>
+    <div class="field"><label>简介</label><textarea name="description" rows="4" maxlength="1000" placeholder="可以留空">{{ document.description }}</textarea></div>
+    <label class="check-line"><input type="checkbox" name="allow_download" value="1" {% if document.allow_download %}checked{% endif %}><span><strong>允许公开下载</strong><small>开启后阅读页可下载原文件；Office 文档还可下载转换后的 PDF。</small></span></label>
+    <div style="margin-top:16px"><button type="submit">保存修改</button></div>
+  </form>
+</section>
+
+<section class="card">
+  <h2 class="card-title">分享与二维码</h2><p class="card-copy">文档二维码使用新的 <code>/r/{{ document.slug }}</code> 阅读地址，不影响任何历史视频二维码。</p><div class="divider"></div>
+  <div class="tiny muted">阅读链接</div><code class="share-url">{{ document.share_url }}</code>
+  <div class="field" style="margin-top:16px"><label>二维码下方文字</label><input id="qrCaption" maxlength="160" value="{{ document.description or document.title }}" placeholder="例如：说明书、培训资料、产品参数"></div>
+  <div class="actions"><button type="button" id="qrBtn">生成 / 更新二维码</button><a id="qrDownloadSvg" class="button-link secondary" style="display:none" download="{{ document.slug }}-qr.svg">下载 SVG</a><button type="button" id="qrDownloadPng" class="secondary" style="display:none">下载 PNG</button></div>
+  <div id="qrBox" class="qrbox" style="display:none"><img id="qrImage" alt="二维码"></div>
+</section>
+
+<section class="card">
+  <div class="row"><div class="grow"><h2 class="card-title">文档处理日志</h2><p class="card-copy">事件、LibreOffice 转换和 PDF 页面渲染日志保存在 <code>data/logs/{{ document.slug }}/</code>。</p></div><button type="button" class="secondary" id="refreshLogs">刷新日志</button></div>
+  <div class="divider"></div><h3 style="font-size:.9rem">任务事件</h3><pre id="eventLog" class="logbox">加载中…</pre><h3 style="font-size:.9rem;margin-top:18px">Office 转 PDF</h3><pre id="convertLog" class="logbox">加载中…</pre><h3 style="font-size:.9rem;margin-top:18px">PDF 页面渲染</h3><pre id="renderLog" class="logbox">加载中…</pre>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+const slug={{ document.slug|tojson }};const statusEl=document.getElementById('status');const progressEl=document.getElementById('progressText');const statusLabels={ready:'已就绪',processing:'处理中',queued:'排队中',uploading:'上传中',error:'失败'};
+async function loadStatus(){const r=await fetch('/api/document/status/'+slug,{cache:'no-store'});if(!r.ok)return;const d=await r.json();statusEl.textContent=statusLabels[d.status]||d.status;statusEl.className=`badge status-${d.status}`;progressEl.textContent=d.page_count?`已生成 ${d.page_count} 页手机阅读页`:'';return d.status}
+async function loadLogs(){const r=await fetch('/api/document/logs/'+slug,{cache:'no-store'});if(!r.ok)return;const d=await r.json();document.getElementById('eventLog').textContent=d.events||'暂无事件日志';document.getElementById('convertLog').textContent=d.convert||'无需 Office 转换或尚未开始';document.getElementById('renderLog').textContent=d.render||'尚未生成页面';await loadStatus()}
+document.getElementById('refreshLogs').addEventListener('click',loadLogs);loadLogs();
+{% if document.status in ['uploading','queued','processing'] %}const timer=setInterval(async()=>{const s=await loadStatus();if(s==='ready'||s==='error'){clearInterval(timer);loadLogs()}},3000);{% endif %}
+let currentQrUrl='';async function downloadPng(){if(!currentQrUrl)return;try{const res=await fetch(currentQrUrl,{cache:'no-store'});if(!res.ok)throw new Error(`HTTP ${res.status}`);const svgText=await res.text();const blobUrl=URL.createObjectURL(new Blob([svgText],{type:'image/svg+xml;charset=utf-8'}));try{const img=new Image();await new Promise((resolve,reject)=>{img.onload=resolve;img.onerror=()=>reject(new Error('二维码图片加载失败'));img.src=blobUrl});const scale=4,canvas=document.createElement('canvas');canvas.width=(img.naturalWidth||360)*scale;canvas.height=(img.naturalHeight||400)*scale;const ctx=canvas.getContext('2d',{alpha:false});ctx.imageSmoothingEnabled=false;ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(img,0,0,canvas.width,canvas.height);const a=document.createElement('a');a.href=canvas.toDataURL('image/png');a.download=`${slug}-qr.png`;document.body.appendChild(a);a.click();a.remove()}finally{URL.revokeObjectURL(blobUrl)}}catch(err){alert(`下载 PNG 失败：${err.message||err}`)}}
+document.getElementById('qrBtn').addEventListener('click',()=>{const caption=document.getElementById('qrCaption').value||'';currentQrUrl='/qr/document/'+slug+'.svg?caption='+encodeURIComponent(caption)+'&t='+Date.now();document.getElementById('qrImage').src=currentQrUrl;document.getElementById('qrBox').style.display='block';const svg=document.getElementById('qrDownloadSvg');svg.href=currentQrUrl;svg.style.display='inline-flex';document.getElementById('qrDownloadPng').style.display='inline-flex'});document.getElementById('qrDownloadPng').addEventListener('click',downloadPng);
+</script>
+{% endblock %}

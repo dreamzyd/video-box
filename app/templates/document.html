@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <title>{{ document.title }}</title>
+  <style>
+    *{box-sizing:border-box} html{background:#eef1f5} body{margin:0;color:#1d2430;background:#eef1f5;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+    .bar{position:sticky;top:0;z-index:20;background:rgba(255,255,255,.94);backdrop-filter:blur(14px);border-bottom:1px solid #dfe4ea;padding:max(10px,env(safe-area-inset-top)) 12px 10px}
+    .bar-inner{max-width:980px;margin:0 auto;display:flex;align-items:center;gap:12px}.title{flex:1;min-width:0}.title strong{display:block;font-size:.98rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.title span{display:block;color:#7b8490;font-size:.74rem;margin-top:2px}
+    .download{display:inline-flex;align-items:center;justify-content:center;background:#111827;color:white;text-decoration:none;border-radius:9px;padding:8px 10px;font-size:.78rem;font-weight:750;white-space:nowrap}
+    .doc{width:min(100%,980px);margin:0 auto;padding:12px 10px 42px}.page{display:block;width:100%;height:auto;margin:0 auto 12px;background:white;box-shadow:0 2px 12px rgba(15,23,42,.12);border-radius:3px}
+    .state{max-width:520px;margin:16vh auto 0;text-align:center;padding:24px}.state strong{font-size:1.1rem}.muted{color:#7b8490;line-height:1.7}.error{color:#b4232d}
+    @media(max-width:600px){.bar{padding-left:10px;padding-right:10px}.doc{padding:7px 0 28px}.page{border-radius:0;margin-bottom:7px;box-shadow:0 1px 7px rgba(15,23,42,.13)}.title span{font-size:.7rem}.download{padding:7px 9px}}
+  </style>
+</head>
+<body>
+{% if document.status == 'ready' %}
+  <header class="bar">
+    <div class="bar-inner">
+      <div class="title"><strong>{{ document.title }}</strong><span>{{ document.type_label }} · {{ document.page_count }} 页</span></div>
+      {% if document.allow_download %}
+        {% if document.original_path %}<a class="download" href="/document/{{ document.slug }}/download/original">下载原文件</a>{% endif %}
+        {% if document.document_type != 'pdf' %}<a class="download" href="/document/{{ document.slug }}/download/pdf">下载 PDF</a>{% endif %}
+      {% endif %}
+    </div>
+  </header>
+  <main class="doc">
+    {% for page in range(1, document.page_count + 1) %}
+      <img class="page" src="/document/{{ document.slug }}/page/{{ page }}" loading="{{ 'eager' if page <= 2 else 'lazy' }}" decoding="async" alt="第 {{ page }} 页">
+    {% endfor %}
+  </main>
+{% elif document.status == 'error' %}
+  <div class="state error"><strong>文档处理失败</strong><p>请联系资源管理员。</p></div>
+{% else %}
+  <div class="state"><strong>文档正在处理…</strong><p class="muted">当前状态：<span id="docState">{{ document.status }}</span></p></div>
+  <script>
+    const slug={{ document.slug|tojson }};
+    const timer=setInterval(async()=>{
+      try{
+        const r=await fetch('/r/'+slug,{cache:'no-store',redirect:'manual'});
+        if(r.status===200){clearInterval(timer);location.reload();}
+      }catch(e){}
+    },4000);
+  </script>
+{% endif %}
+</body>
+</html>

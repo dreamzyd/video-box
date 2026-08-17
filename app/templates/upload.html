@@ -1,12 +1,12 @@
 {% extends "base.html" %}
-{% block title %}上传视频 · Video Box{% endblock %}
+{% block title %}上传资源 · Video Box{% endblock %}
 {% block wrap_class %}narrow{% endblock %}
 {% block body %}
 <div class="page-head">
   <div>
     <div class="eyebrow">Upload</div>
-    <h1 class="page-title">上传视频</h1>
-    <p class="page-subtitle">上传完成后会进入单任务转码队列，并自动跳转到管理中心继续查看状态。</p>
+    <h1 class="page-title">上传资源</h1>
+    <p class="page-subtitle">视频自动转码为手机兼容 MP4；PDF / Word / PowerPoint / Excel 会生成适合手机连续浏览的阅读页。</p>
   </div>
   <a class="btn secondary" href="/admin">进入管理中心</a>
 </div>
@@ -17,7 +17,7 @@
 
 <section class="card card-elevated upload-card">
   <form id="uploadForm" action="/upload" method="post" enctype="multipart/form-data">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input id="csrfToken" type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="request_id" value="{{ upload_request_id }}">
 
     <div class="field">
@@ -31,21 +31,33 @@
     </div>
 
     <div class="field">
-      <label for="video">视频文件</label>
+      <label for="resource">文件</label>
       <div class="file-shell">
-        <input id="video" type="file" name="video" accept="video/*,.mkv,.mov,.m2ts,.mts" required>
-        <div class="field-help" id="fileMeta">支持常见 MP4 / MOV / MKV / MTS 等格式。</div>
+        <input id="resource" type="file" name="resource"
+          accept="video/*,.mkv,.mov,.m2ts,.mts,.pdf,.doc,.docx,.odt,.ppt,.pptx,.odp,.xls,.xlsx,.ods" required>
+        <div class="field-help" id="fileMeta">支持视频、PDF、Word、PowerPoint、Excel；Office 文档会转换为 PDF 并生成手机阅读页。</div>
       </div>
     </div>
 
-    <div class="field">
-      <label for="orientation">输出方向</label>
-      <select id="orientation" name="orientation">
-        <option value="auto" selected>自动 · 保持原视频横/竖方向（推荐）</option>
-        <option value="landscape">强制横屏 16:9 · 1280×720，不裁切</option>
-        <option value="portrait">强制竖屏 9:16 · 720×1280，不裁切</option>
-      </select>
-      <div class="field-help">强制方向会通过缩放和补边适配，不会为了铺满而裁掉主体。</div>
+    <div id="videoOptions" style="display:none">
+      <div class="field">
+        <label for="orientation">视频输出方向</label>
+        <select id="orientation" name="orientation">
+          <option value="auto" selected>自动 · 保持原视频横/竖方向（推荐）</option>
+          <option value="landscape">强制横屏 16:9 · 1280×720，不裁切</option>
+          <option value="portrait">强制竖屏 9:16 · 720×1280，不裁切</option>
+        </select>
+        <div class="field-help">强制方向会通过缩放和补边适配，不会为了铺满而裁掉主体。</div>
+      </div>
+    </div>
+
+    <div id="documentOptions" style="display:none">
+      <div class="field option-line">
+        <label class="check-line">
+          <input type="checkbox" name="allow_download" value="1">
+          <span><strong>允许观看者下载文件</strong><small>默认关闭。开启后，公开阅读页可下载原文件和转换后的 PDF。</small></span>
+        </label>
+      </div>
     </div>
 
     <button id="uploadBtn" type="submit" class="btn-wide">开始上传</button>
@@ -57,18 +69,24 @@
   </form>
 </section>
 
-<div class="notice">上传和管理需要登录；分享出去的 <code>/v/资源ID</code> 播放页不需要登录。转码默认串行执行，更适合 2 核 2G 这类小型服务器。</div>
+<div class="notice">上传和管理需要登录；分享出去的公开视频 <code>/v/资源ID</code> 和公开文档 <code>/r/资源ID</code> 均不需要登录，但都受“暂停 / 恢复访问”控制。</div>
 {% endblock %}
 {% block scripts %}
 <script>
   const form = document.getElementById('uploadForm');
   const btn = document.getElementById('uploadBtn');
-  const fileInput = document.getElementById('video');
+  const fileInput = document.getElementById('resource');
   const fileMeta = document.getElementById('fileMeta');
+  const videoOptions = document.getElementById('videoOptions');
+  const documentOptions = document.getElementById('documentOptions');
   const shell = document.getElementById('progressShell');
   const bar = document.getElementById('progressBar');
   const text = document.getElementById('progressText');
   const percent = document.getElementById('progressPercent');
+  const csrf = document.getElementById('csrfToken').value;
+
+  const videoExts = new Set(['mp4','mov','m4v','avi','mkv','webm','mpeg','mpg','mts','m2ts','3gp']);
+  const docExts = new Set(['pdf','doc','docx','odt','ppt','pptx','odp','xls','xlsx','ods']);
 
   function formatBytes(bytes) {
     if (!Number.isFinite(bytes) || bytes <= 0) return '';
@@ -78,15 +96,31 @@
     return `${value.toFixed(i > 1 ? 2 : 1)} ${units[i]}`;
   }
 
+  function classify(filename) {
+    const ext = (filename.split('.').pop() || '').toLowerCase();
+    if (videoExts.has(ext)) return 'video';
+    if (docExts.has(ext)) return 'document';
+    return 'unknown';
+  }
+
   fileInput.addEventListener('change', () => {
     const f = fileInput.files?.[0];
-    fileMeta.textContent = f ? `${f.name} · ${formatBytes(f.size)}` : '支持常见 MP4 / MOV / MKV / MTS 等格式。';
+    if (!f) {
+      fileMeta.textContent = '支持视频、PDF、Word、PowerPoint、Excel；Office 文档会转换为 PDF 并生成手机阅读页。';
+      videoOptions.style.display = 'none';
+      documentOptions.style.display = 'none';
+      return;
+    }
+    const kind = classify(f.name);
+    const label = kind === 'video' ? '视频' : kind === 'document' ? '文档' : '未知格式';
+    fileMeta.textContent = `${f.name} · ${formatBytes(f.size)} · ${label}`;
+    videoOptions.style.display = kind === 'video' ? 'block' : 'none';
+    documentOptions.style.display = kind === 'document' ? 'block' : 'none';
   });
 
   form.addEventListener('submit', (event) => {
     event.preventDefault();
-    if (btn.disabled) return;
-    if (!fileInput.files?.length) return;
+    if (btn.disabled || !fileInput.files?.length) return;
 
     btn.disabled = true;
     btn.textContent = '正在上传…';
@@ -97,29 +131,32 @@
 
     const xhr = new XMLHttpRequest();
     xhr.open('POST', form.action, true);
+    // 让服务端在解析大文件 multipart 之前就能校验登录会话 CSRF。
+    xhr.setRequestHeader('X-CSRF-Token', csrf);
     xhr.upload.addEventListener('progress', (e) => {
       if (!e.lengthComputable) return;
       const p = Math.min(100, Math.round((e.loaded / e.total) * 100));
       bar.style.width = `${p}%`;
       percent.textContent = `${p}%`;
-      text.textContent = p >= 100 ? '上传完成，服务器正在创建任务…' : `正在上传 ${formatBytes(e.loaded)} / ${formatBytes(e.total)}`;
+      text.textContent = p >= 100 ? '文件已发送，服务器正在创建处理任务…' : `正在上传 ${formatBytes(e.loaded)} / ${formatBytes(e.total)}`;
     });
     xhr.addEventListener('load', () => {
       if (xhr.status >= 200 && xhr.status < 400) {
         bar.style.width = '100%';
         percent.textContent = '100%';
-        text.textContent = '已创建转码任务，正在进入管理中心…';
+        text.textContent = '任务已创建，正在进入管理中心…';
         window.location.assign(xhr.responseURL || '/admin');
         return;
       }
       btn.disabled = false;
       btn.textContent = '重新上传';
-      text.textContent = `上传失败：HTTP ${xhr.status}`;
+      const detail = (xhr.responseText || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      text.textContent = `上传失败：HTTP ${xhr.status}${detail ? ' · ' + detail.slice(0, 180) : ''}`;
     });
     xhr.addEventListener('error', () => {
       btn.disabled = false;
       btn.textContent = '重新上传';
-      text.textContent = '网络连接中断，请检查连接后重试。';
+      text.textContent = '网络连接中断，请检查反向代理 / SSH 隧道后重试。';
     });
     xhr.addEventListener('abort', () => {
       btn.disabled = false;

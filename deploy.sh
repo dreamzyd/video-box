@@ -46,7 +46,7 @@ set_env() {
   fi
 }
 
-# 从旧版本升级时 .env 可能没有 BIND_ADDRESS；1.0 默认仅监听本机。
+# 从旧版本升级时 .env 可能没有 BIND_ADDRESS；1.1.0 默认仅监听本机。
 if [ -z "$(get_env BIND_ADDRESS)" ]; then
   set_env BIND_ADDRESS "127.0.0.1"
 fi
@@ -77,7 +77,7 @@ mkdir -p data/db data/uploads data/media data/logs
 echo "检查 Compose 配置…"
 docker compose config >/dev/null
 
-echo "构建并启动 Video Box 1.0…"
+echo "构建并启动 Video Box 1.1.0…"
 docker compose up -d --build
 docker compose ps
 
@@ -112,4 +112,4 @@ else
   echo "管理中心：http://<服务器IP>:${port}/admin"
 fi
 
-echo "公开视频路径：/v/<资源ID>（无需登录；仍受资源暂停/恢复控制）"
+echo "公开视频路径：/v/<资源ID>；公开文档路径：/r/<资源ID>（均无需登录；仍受暂停/恢复控制）"

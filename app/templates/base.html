@@ -197,6 +197,7 @@
     .status-processing,.status-queued,.status-uploading { background:#443b20; color:#f2d985; }
 
     .summary-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin:14px 0 20px; }
+    .summary-grid-five { grid-template-columns:repeat(5,minmax(0,1fr)); }
     .summary-card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px; display:flex; flex-direction:column; gap:5px; }
     .summary-card strong { font-size:1.65rem; letter-spacing:-.04em; }
     .summary-card span { color:var(--muted); font-size:.84rem; }
@@ -214,6 +215,12 @@
     .video-cell { max-width:380px; }
     .video-title { display:flex; align-items:center; gap:9px; font-weight:800; }
     .video-dot { width:8px; height:8px; flex:none; border-radius:50%; background:#596274; }
+    .resource-icon { width:28px; height:28px; flex:none; display:grid; place-items:center; border-radius:8px; font-size:.72rem; font-weight:900; }
+    .resource-video { background:#20365b; color:#9fc6ff; }
+    .resource-document { background:#3a2f1d; color:#f0ce86; }
+    .type-badge { display:inline-flex; align-items:center; border-radius:8px; padding:5px 8px; font-size:.76rem; font-weight:800; }
+    .type-video { background:#20365b; color:#a9ccff; }
+    .type-document { background:#3a2f1d; color:#f0ce86; }
     .ellipsis { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:380px; }
     .qr-row td { background:#10141b; padding:18px 20px 20px; }
     .inline-qr-panel { display:grid; grid-template-columns:minmax(300px,1fr) auto; gap:24px; align-items:start; }
@@ -254,6 +261,11 @@
     .progress-line { height:8px; background:#242b36; border-radius:999px; overflow:hidden; }
     .progress-bar { width:0%; height:100%; background:linear-gradient(90deg,#6ea8fe,#8ec5ff); transition:width .12s linear; }
     .progress-meta { display:flex; justify-content:space-between; gap:12px; margin-top:8px; color:var(--muted); font-size:.82rem; }
+    .check-line { display:flex; align-items:flex-start; gap:11px; cursor:pointer; font-weight:600; }
+    .check-line input { width:18px; height:18px; flex:none; margin:2px 0 0; accent-color:#6ea8fe; }
+    .check-line span { display:flex; flex-direction:column; gap:4px; }
+    .check-line small { color:var(--muted-2); font-weight:500; line-height:1.5; }
+    .option-line { padding:13px 14px; border:1px solid var(--line-soft); background:#10151d; border-radius:12px; }
 
     .access-card { border-left:3px solid var(--success); }
     .access-card.paused { border-left-color:var(--danger); }
@@ -267,7 +279,7 @@
       .nav a,.nav button { font-size:.82rem; padding:7px 8px; }
       .wrap { padding-top:24px; }
       .page-head { flex-direction:column; align-items:stretch; }
-      .summary-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .summary-grid,.summary-grid-five { grid-template-columns:repeat(2,minmax(0,1fr)); }
       .manager-head { align-items:stretch; flex-direction:column; }
       .search-wrap { width:100%; }
       .inline-qr-panel,.external-qr-body { grid-template-columns:1fr; }
@@ -301,7 +313,7 @@
   {% endblock %}
 
   <main class="wrap {% block wrap_class %}{% endblock %}">{% block body %}{% endblock %}</main>
-  {% block footer %}<footer class="footer">Video Box {{ app_version }} · 私有上传与管理，公开链接按资源访问策略播放</footer>{% endblock %}
+  {% block footer %}<footer class="footer">Video Box {{ app_version }} · 视频与文档私有上传管理，公开链接按资源访问策略展示</footer>{% endblock %}
   {% block scripts %}{% endblock %}
 </body>
 </html>

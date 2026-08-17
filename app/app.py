@@ -1,20 +1,17 @@
 import hashlib
-import io
 import os
 import secrets
 import sqlite3
-import textwrap
 import unicodedata
 from datetime import datetime, timedelta
-from pathlib import Path
 from functools import wraps
-from urllib.parse import urlparse
+from pathlib import Path
+from urllib.parse import quote, urlparse
 from xml.sax.saxutils import escape
 
 import qrcode
 from flask import Flask, Response, abort, flash, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
-from werkzeug.utils import secure_filename
 
 from db import connect, init_db
 
@@ -22,16 +19,35 @@ UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "/data/uploads"))
 MEDIA_DIR = Path(os.getenv("MEDIA_DIR", "/data/media"))
 LOG_DIR = Path(os.getenv("LOG_DIR", "/data/logs"))
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
-APP_VERSION = os.getenv("APP_VERSION", "1.0").strip() or "1.0"
-APP_PASSWORD = (os.getenv("APP_PASSWORD", "").strip() or os.getenv("ADMIN_PASSWORD", "").strip())
+APP_VERSION = os.getenv("APP_VERSION", "1.1.0").strip() or "1.1.0"
+APP_PASSWORD = os.getenv("APP_PASSWORD", "").strip() or os.getenv("ADMIN_PASSWORD", "").strip()
 APP_SESSION_HOURS = max(1, int(os.getenv("APP_SESSION_HOURS", os.getenv("ADMIN_SESSION_HOURS", "12"))))
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").strip().lower() in {"1", "true", "yes", "on"}
 MAX_UPLOAD_GB = float(os.getenv("MAX_UPLOAD_GB", "5"))
-ORIENTATION_MODES = {"auto", "landscape", "portrait"}
 
-ALLOWED_EXTENSIONS = {
+ORIENTATION_MODES = {"auto", "landscape", "portrait"}
+VIDEO_EXTENSIONS = {
     ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".mpeg", ".mpg", ".mts", ".m2ts", ".3gp"
 }
+DOCUMENT_TYPES = {
+    ".pdf": "pdf",
+    ".doc": "word",
+    ".docx": "word",
+    ".odt": "word",
+    ".ppt": "presentation",
+    ".pptx": "presentation",
+    ".odp": "presentation",
+    ".xls": "spreadsheet",
+    ".xlsx": "spreadsheet",
+    ".ods": "spreadsheet",
+}
+DOCUMENT_LABELS = {
+    "pdf": "PDF",
+    "word": "Word",
+    "presentation": "PowerPoint",
+    "spreadsheet": "Excel",
+}
+ALLOWED_EXTENSIONS = VIDEO_EXTENSIONS | set(DOCUMENT_TYPES)
 
 app = Flask(__name__)
 app.secret_key = os.getenv("APP_SECRET", "change-me-now")
@@ -45,16 +61,17 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 @app.after_request
 def security_headers(response):
-    if request.path == "/" or request.path.startswith(("/login", "/admin", "/upload", "/manage", "/api/logs", "/qr/")):
+    if request.path == "/" or request.path.startswith(("/login", "/admin", "/upload", "/manage", "/api/", "/qr/")):
         response.headers["Cache-Control"] = "no-store"
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "same-origin")
     return response
 
+
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
-# Web 进程不负责重排 processing，避免仅重启 Web 时制造重复转码。
+# Web 进程不负责重排 processing，避免仅重启 Web 时制造重复任务。
 init_db(requeue_processing=False)
 
 
@@ -62,10 +79,16 @@ def row_to_dict(row):
     return dict(row) if row else None
 
 
-def playback_url(slug):
+def video_playback_url(slug):
     if PUBLIC_BASE_URL:
         return f"{PUBLIC_BASE_URL}/v/{slug}"
     return url_for("watch", slug=slug, _external=True)
+
+
+def document_reader_url(slug):
+    if PUBLIC_BASE_URL:
+        return f"{PUBLIC_BASE_URL}/r/{slug}"
+    return url_for("read_document", slug=slug, _external=True)
 
 
 def session_authenticated():
@@ -81,11 +104,23 @@ def safe_next(value, fallback="/admin"):
 
 
 def normalized_upload_name(filename):
-    """Keep a valid extension even when the visible filename is non-ASCII."""
-    raw_name = (filename or "").strip()
-    ext = Path(raw_name).suffix.lower()
-    stem = secure_filename(Path(raw_name).stem) or "video"
-    return f"{stem}{ext}", ext
+    """Preserve the user's Unicode filename; storage itself always uses a random slug."""
+    raw = (filename or "").replace("\\", "/").strip()
+    name = raw.rsplit("/", 1)[-1].replace("\x00", "").replace("\r", " ").replace("\n", " ").strip()
+    if not name:
+        name = "file"
+    # Keep the database/display field bounded. The actual disk filename never uses this string.
+    name = name[:255]
+    return name, Path(name).suffix.lower()
+
+
+def resource_kind_for_extension(ext):
+    if ext in VIDEO_EXTENSIONS:
+        return "video", "video"
+    document_type = DOCUMENT_TYPES.get(ext)
+    if document_type:
+        return "document", document_type
+    return None, None
 
 
 def login_required(view):
@@ -109,7 +144,8 @@ def csrf_token():
 
 def require_csrf():
     expected = session.get("csrf_token", "")
-    supplied = request.form.get("csrf_token", "") or request.headers.get("X-CSRF-Token", "")
+    # Header first: large multipart uploads can be rejected before parsing the whole request body.
+    supplied = request.headers.get("X-CSRF-Token", "") or request.form.get("csrf_token", "")
     if not expected or not supplied or not secrets.compare_digest(expected, supplied):
         abort(400, description="CSRF token invalid")
 
@@ -119,20 +155,20 @@ def inject_login_context():
     logged_in = session_authenticated()
     return {
         "logged_in": logged_in,
-        "admin_logged_in": logged_in,  # 兼容旧模板变量
+        "admin_logged_in": logged_in,
         "csrf_token": csrf_token if logged_in else (lambda: ""),
         "app_version": APP_VERSION,
     }
 
 
-def video_log_dir(slug):
+def resource_log_dir(slug):
     path = LOG_DIR / slug
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def log_event(slug, message):
-    path = video_log_dir(slug) / "events.log"
+    path = resource_log_dir(slug) / "events.log"
     stamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
     with path.open("a", encoding="utf-8") as fp:
         fp.write(f"[{stamp}] {message}\n")
@@ -165,7 +201,6 @@ def tail_text(path, max_bytes=65536):
 
 def parse_progress(text):
     result = {}
-    # -progress 会持续输出 key=value；取每个字段最后一次出现的值即可。
     for line in text.replace("\r", "\n").splitlines():
         if "=" in line:
             key, value = line.split("=", 1)
@@ -177,13 +212,6 @@ def parse_progress(text):
         "frame": result.get("frame", ""),
         "fps": result.get("fps", ""),
     }
-
-
-def display_width(text):
-    width = 0
-    for ch in text:
-        width += 2 if unicodedata.east_asian_width(ch) in {"W", "F", "A"} else 1
-    return width
 
 
 def wrap_caption(text, limit=28, max_lines=4):
@@ -210,28 +238,23 @@ def wrap_caption(text, limit=28, max_lines=4):
 
 
 def build_qr_svg(url, caption):
-    # 二维码本体尽量撑满卡片；保留 3 个 module 的安静区，兼顾紧凑与扫码可靠性。
     qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=1, border=3)
     qr.add_data(url)
     qr.make(fit=True)
     matrix = qr.get_matrix()
     n = len(matrix)
-
     canvas = 360
     qr_size = 336
     cell = qr_size / n
     x0 = (canvas - qr_size) / 2
     y0 = 10
     lines = wrap_caption(caption, limit=26, max_lines=4)
-
-    # 文字紧贴二维码；无文字时卡片也不会额外留大块空白。
     caption_gap = 2
     line_height = 32
     font_size = 26
     base_y = y0 + qr_size + caption_gap + font_size
     bottom_pad = 8
     height = int((base_y + (len(lines) - 1) * line_height + bottom_pad) if lines else (y0 + qr_size + 10))
-
     rects = []
     for y, row in enumerate(matrix):
         for x, dark in enumerate(row):
@@ -240,14 +263,12 @@ def build_qr_svg(url, caption):
                     f'<rect x="{x0 + x * cell:.3f}" y="{y0 + y * cell:.3f}" '
                     f'width="{cell + 0.12:.3f}" height="{cell + 0.12:.3f}" fill="#000"/>'
                 )
-
     text_nodes = []
     for i, line in enumerate(lines):
         text_nodes.append(
             f'<text x="180" y="{base_y + i * line_height:.1f}" text-anchor="middle" '
             f'font-size="{font_size}" fill="#111">{escape(line)}</text>'
         )
-
     return f'''<svg xmlns="http://www.w3.org/2000/svg" width="{canvas}" height="{height}" viewBox="0 0 {canvas} {height}">
 <rect width="100%" height="100%" rx="10" fill="#fff"/>
 <g shape-rendering="crispEdges">{''.join(rects)}</g>
@@ -256,13 +277,20 @@ def build_qr_svg(url, caption):
 </svg>'''
 
 
+def status_label(status):
+    return {
+        "ready": "已就绪",
+        "processing": "处理中",
+        "queued": "排队中",
+        "uploading": "上传中",
+        "error": "失败",
+    }.get(status, status)
+
+
 @app.get("/")
 @login_required
 def index():
-    return render_template(
-        "upload.html",
-        upload_request_id=secrets.token_urlsafe(18),
-    )
+    return render_template("upload.html", upload_request_id=secrets.token_urlsafe(18))
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -271,7 +299,6 @@ def login():
     target = safe_next(request.values.get("next"), "/admin")
     if session_authenticated():
         return redirect(target)
-
     error = ""
     if request.method == "POST":
         supplied = request.form.get("password", "")
@@ -301,109 +328,183 @@ def logout():
 @login_required
 def admin_dashboard():
     with connect() as conn:
-        rows = conn.execute(
-            "SELECT slug,title,description,original_name,orientation,status,error,created_at,views,access_enabled "
+        video_rows = conn.execute(
+            "SELECT id,slug,title,description,original_name,orientation,status,error,created_at,views,access_enabled "
             "FROM videos ORDER BY id DESC"
         ).fetchall()
-    videos = [row_to_dict(x) for x in rows]
-    for video in videos:
-        video["share_url"] = playback_url(video["slug"])
+        document_rows = conn.execute(
+            "SELECT id,slug,title,description,original_name,document_type,status,error,created_at,views,"
+            "access_enabled,allow_download,page_count FROM documents ORDER BY id DESC"
+        ).fetchall()
+
+    resources = []
+    for row in video_rows:
+        item = row_to_dict(row)
+        item.update({
+            "kind": "video",
+            "kind_label": "视频",
+            "share_url": video_playback_url(item["slug"]),
+            "public_path": f"/v/{item['slug']}",
+            "manage_path": f"/manage/{item['slug']}",
+            "access_path": f"/manage/{item['slug']}/access",
+            "qr_path": f"/qr/{item['slug']}.svg",
+        })
+        resources.append(item)
+
+    for row in document_rows:
+        item = row_to_dict(row)
+        item.update({
+            "kind": "document",
+            "kind_label": DOCUMENT_LABELS.get(item["document_type"], "文档"),
+            "share_url": document_reader_url(item["slug"]),
+            "public_path": f"/r/{item['slug']}",
+            "manage_path": f"/manage/document/{item['slug']}",
+            "access_path": f"/manage/document/{item['slug']}/access",
+            "qr_path": f"/qr/document/{item['slug']}.svg",
+        })
+        resources.append(item)
+
+    resources.sort(key=lambda r: (r.get("created_at") or "", r.get("id") or 0), reverse=True)
     summary = {
-        "total": len(videos),
-        "ready": sum(1 for v in videos if v["status"] == "ready"),
-        "processing": sum(1 for v in videos if v["status"] in {"uploading", "queued", "processing"}),
-        "paused": sum(1 for v in videos if not v["access_enabled"]),
+        "total": len(resources),
+        "videos": len(video_rows),
+        "documents": len(document_rows),
+        "ready": sum(1 for r in resources if r["status"] == "ready"),
+        "processing": sum(1 for r in resources if r["status"] in {"uploading", "queued", "processing"}),
+        "paused": sum(1 for r in resources if not r["access_enabled"]),
     }
     return render_template(
         "index.html",
-        videos=videos,
+        resources=resources,
         summary=summary,
         public_base_url=PUBLIC_BASE_URL,
+        status_label=status_label,
     )
+
+
+def find_request_duplicate(request_id):
+    with connect() as conn:
+        video = conn.execute("SELECT slug FROM videos WHERE request_id=?", (request_id,)).fetchone()
+        if video:
+            return "video", video["slug"]
+        document = conn.execute("SELECT slug FROM documents WHERE request_id=?", (request_id,)).fetchone()
+        if document:
+            return "document", document["slug"]
+    return None, None
 
 
 @app.post("/upload")
 @login_required
 def upload():
     require_csrf()
-    f = request.files.get("video")
+    f = request.files.get("resource") or request.files.get("video")
     if not f or not f.filename:
-        flash("请选择视频文件。", "error")
+        flash("请选择要上传的文件。", "error")
         return redirect(url_for("index"))
 
     original_name, ext = normalized_upload_name(f.filename)
-    if ext not in ALLOWED_EXTENSIONS:
+    kind, subtype = resource_kind_for_extension(ext)
+    if not kind:
         flash(f"暂不接受该扩展名：{ext or '(无扩展名)'}", "error")
         return redirect(url_for("index")), 400
 
-    request_id = (request.form.get("request_id") or "").strip()[:100]
-    if not request_id:
-        request_id = secrets.token_urlsafe(18)
+    request_id = (request.form.get("request_id") or "").strip()[:100] or secrets.token_urlsafe(18)
+    old_kind, old_slug = find_request_duplicate(request_id)
+    if old_slug:
+        flash("检测到重复提交，已保留第一次上传的任务。", "ok")
+        return redirect(url_for("admin_dashboard"))
 
-    title = (request.form.get("title") or Path(original_name).stem).strip()[:200] or "未命名视频"
+    title = (request.form.get("title") or Path(original_name).stem).strip()[:200] or "未命名资源"
     description = (request.form.get("description") or "").strip()[:1000]
-    orientation = (request.form.get("orientation") or "auto").strip().lower()
-    if orientation not in ORIENTATION_MODES:
-        orientation = "auto"
-
     slug = secrets.token_urlsafe(9).replace("-", "").replace("_", "")[:12]
     stored_name = f"{slug}{ext}"
     input_path = UPLOAD_DIR / stored_name
 
-    # 先用 request_id 占位。双击按钮/浏览器重复提交同一表单时，第二个请求不会再创建新任务。
-    try:
-        with connect() as conn:
-            conn.execute(
-                "INSERT INTO videos(slug,request_id,title,description,original_name,input_path,orientation,status) "
-                "VALUES(?,?,?,?,?,?,?,'uploading')",
-                (slug, request_id, title, description, original_name, str(input_path), orientation),
-            )
-            conn.commit()
-    except sqlite3.IntegrityError:
-        with connect() as conn:
-            old = conn.execute("SELECT slug FROM videos WHERE request_id=?", (request_id,)).fetchone()
-        if old:
-            flash("检测到重复提交，已自动使用第一次上传的任务。", "ok")
+    if kind == "video":
+        orientation = (request.form.get("orientation") or "auto").strip().lower()
+        if orientation not in ORIENTATION_MODES:
+            orientation = "auto"
+        try:
+            with connect() as conn:
+                conn.execute(
+                    "INSERT INTO videos(slug,request_id,title,description,original_name,input_path,orientation,status) "
+                    "VALUES(?,?,?,?,?,?,?,'uploading')",
+                    (slug, request_id, title, description, original_name, str(input_path), orientation),
+                )
+                conn.commit()
+        except sqlite3.IntegrityError:
+            flash("检测到重复提交，已保留第一次上传的任务。", "ok")
             return redirect(url_for("admin_dashboard"))
-        raise
+        log_event(slug, f"开始接收视频：{original_name}，方向={orientation}")
+    else:
+        allow_download = 1 if (request.form.get("allow_download") or "").lower() in {"1", "true", "yes", "on"} else 0
+        try:
+            with connect() as conn:
+                conn.execute(
+                    "INSERT INTO documents(slug,request_id,title,description,original_name,input_path,original_ext,"
+                    "document_type,status,allow_download) VALUES(?,?,?,?,?,?,?,?,'uploading',?)",
+                    (slug, request_id, title, description, original_name, str(input_path), ext, subtype, allow_download),
+                )
+                conn.commit()
+        except sqlite3.IntegrityError:
+            flash("检测到重复提交，已保留第一次上传的任务。", "ok")
+            return redirect(url_for("admin_dashboard"))
+        log_event(slug, f"开始接收文档：{original_name}，类型={subtype}")
 
-    log_event(slug, f"开始接收上传：{original_name}，方向={orientation}")
     try:
         sha256, size = save_and_hash(f, input_path)
         log_event(slug, f"上传完成：{size} bytes，sha256={sha256}")
 
-        # 内容级防重复：同一个文件 + 同一个输出方向重复上传，只保留最早一条有效任务。
-        duplicate = None
-        with connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            duplicate = conn.execute(
-                "SELECT id,slug,status FROM videos WHERE id<>(SELECT id FROM videos WHERE slug=?) "
-                "AND content_sha256=? AND orientation=? AND status IN ('uploading','queued','processing','ready') "
-                "ORDER BY id ASC LIMIT 1",
-                (slug, sha256, orientation),
-            ).fetchone()
-            if duplicate:
-                conn.execute("DELETE FROM videos WHERE slug=?", (slug,))
-            else:
-                conn.execute(
-                    "UPDATE videos SET content_sha256=?, status='queued', updated_at=CURRENT_TIMESTAMP WHERE slug=?",
-                    (sha256, slug),
-                )
-            conn.commit()
+        if kind == "video":
+            with connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                duplicate = conn.execute(
+                    "SELECT id,slug,status FROM videos WHERE id<>(SELECT id FROM videos WHERE slug=?) "
+                    "AND content_sha256=? AND orientation=? AND status IN ('uploading','queued','processing','ready') "
+                    "ORDER BY id ASC LIMIT 1",
+                    (slug, sha256, orientation),
+                ).fetchone()
+                if duplicate:
+                    conn.execute("DELETE FROM videos WHERE slug=?", (slug,))
+                else:
+                    conn.execute(
+                        "UPDATE videos SET content_sha256=?, status='queued', updated_at=CURRENT_TIMESTAMP WHERE slug=?",
+                        (sha256, slug),
+                    )
+                conn.commit()
+        else:
+            with connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                duplicate = conn.execute(
+                    "SELECT id,slug,status FROM documents WHERE id<>(SELECT id FROM documents WHERE slug=?) "
+                    "AND content_sha256=? AND document_type=? AND status IN ('uploading','queued','processing','ready') "
+                    "ORDER BY id ASC LIMIT 1",
+                    (slug, sha256, subtype),
+                ).fetchone()
+                if duplicate:
+                    conn.execute("DELETE FROM documents WHERE slug=?", (slug,))
+                else:
+                    conn.execute(
+                        "UPDATE documents SET content_sha256=?, status='queued', updated_at=CURRENT_TIMESTAMP WHERE slug=?",
+                        (sha256, slug),
+                    )
+                conn.commit()
 
         if duplicate:
             input_path.unlink(missing_ok=True)
             log_event(slug, f"检测到相同内容，取消重复任务，复用 {duplicate['slug']}")
-            flash("检测到相同视频已经上传过，已自动打开已有任务，不会重复转码。", "ok")
+            flash("检测到相同资源已经上传过，不会重复处理。", "ok")
             return redirect(url_for("admin_dashboard"))
 
-        log_event(slug, "任务进入转码队列")
+        log_event(slug, "任务进入处理队列")
+        flash("上传完成，已进入处理队列。", "ok")
         return redirect(url_for("admin_dashboard"))
     except Exception as exc:
         input_path.unlink(missing_ok=True)
+        table = "videos" if kind == "video" else "documents"
         with connect() as conn:
             conn.execute(
-                "UPDATE videos SET status='error', error=?, updated_at=CURRENT_TIMESTAMP WHERE slug=?",
+                f"UPDATE {table} SET status='error', error=?, updated_at=CURRENT_TIMESTAMP WHERE slug=?",
                 (str(exc)[-3000:], slug),
             )
             conn.commit()
@@ -411,6 +512,8 @@ def upload():
         raise
 
 
+# ------------------------- Existing video public routes -------------------------
+# These URLs are intentionally unchanged so every 1.0 QR code keeps working.
 @app.get("/v/<slug>")
 def watch(slug):
     with connect() as conn:
@@ -428,7 +531,6 @@ def watch(slug):
 
 @app.get("/stream/<slug>")
 def stream_video(slug):
-    # 应用只做权限判断；真正的大文件仍由 Nginx 通过 X-Accel-Redirect 高效发送。
     with connect() as conn:
         row = conn.execute(
             "SELECT status,access_enabled,output_path FROM videos WHERE slug=?", (slug,)
@@ -461,6 +563,93 @@ def poster(slug):
     return response
 
 
+# ------------------------------ Document routes ------------------------------
+@app.get("/r/<slug>")
+def read_document(slug):
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM documents WHERE slug=?", (slug,)).fetchone()
+        if not row:
+            abort(404)
+        if not row["access_enabled"]:
+            return render_template("document_disabled.html"), 403
+        if row["status"] == "ready":
+            conn.execute("UPDATE documents SET views=views+1 WHERE slug=?", (slug,))
+            conn.commit()
+            row = conn.execute("SELECT * FROM documents WHERE slug=?", (slug,)).fetchone()
+    document = row_to_dict(row)
+    document["type_label"] = DOCUMENT_LABELS.get(document["document_type"], "文档")
+    if document["status"] == "error":
+        return render_template("document.html", document=document), 500
+    if document["status"] != "ready":
+        return render_template("document.html", document=document), 202
+    return render_template("document.html", document=document)
+
+
+@app.get("/document/<slug>/page/<int:page>")
+def document_page(slug, page):
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT status,access_enabled,page_count FROM documents WHERE slug=?", (slug,)
+        ).fetchone()
+    if not row:
+        abort(404)
+    if not row["access_enabled"]:
+        abort(403)
+    if row["status"] != "ready" or page < 1 or page > row["page_count"]:
+        abort(404)
+    response = Response(status=200, mimetype="image/jpeg")
+    response.headers["X-Accel-Redirect"] = f"/_protected_media/{slug}/pages/page-{page}.jpg"
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
+
+
+def download_disposition(filename):
+    safe_ascii = "download" + Path(filename).suffix.lower()
+    encoded = quote(filename, safe="")
+    return f"attachment; filename=\"{safe_ascii}\"; filename*=UTF-8''{encoded}"
+
+
+@app.get("/document/<slug>/download/original")
+def download_document_original(slug):
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT status,access_enabled,allow_download,original_name,original_path FROM documents WHERE slug=?",
+            (slug,),
+        ).fetchone()
+    if not row:
+        abort(404)
+    if not row["access_enabled"] or not row["allow_download"]:
+        abort(403)
+    if row["status"] != "ready" or not row["original_path"]:
+        abort(404)
+    internal_name = Path(row["original_path"]).name
+    response = Response(status=200, mimetype="application/octet-stream")
+    response.headers["X-Accel-Redirect"] = f"/_protected_media/{slug}/{internal_name}"
+    response.headers["Content-Disposition"] = download_disposition(row["original_name"])
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
+
+
+@app.get("/document/<slug>/download/pdf")
+def download_document_pdf(slug):
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT status,access_enabled,allow_download,title,output_path FROM documents WHERE slug=?", (slug,)
+        ).fetchone()
+    if not row:
+        abort(404)
+    if not row["access_enabled"] or not row["allow_download"]:
+        abort(403)
+    if row["status"] != "ready" or not row["output_path"]:
+        abort(404)
+    response = Response(status=200, mimetype="application/pdf")
+    response.headers["X-Accel-Redirect"] = f"/_protected_media/{slug}/document.pdf"
+    response.headers["Content-Disposition"] = download_disposition(f"{row['title']}.pdf")
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
+
+
+# ------------------------------ Video management ------------------------------
 @app.get("/manage/<slug>")
 @login_required
 def manage(slug):
@@ -469,7 +658,7 @@ def manage(slug):
     if not row:
         abort(404)
     video = row_to_dict(row)
-    video["share_url"] = playback_url(slug)
+    video["share_url"] = video_playback_url(slug)
     return render_template("manage.html", video=video)
 
 
@@ -517,13 +706,73 @@ def update_manage(slug):
     return redirect(url_for("manage", slug=slug))
 
 
+# ---------------------------- Document management ----------------------------
+@app.get("/manage/document/<slug>")
+@login_required
+def manage_document(slug):
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM documents WHERE slug=?", (slug,)).fetchone()
+    if not row:
+        abort(404)
+    document = row_to_dict(row)
+    document["share_url"] = document_reader_url(slug)
+    document["type_label"] = DOCUMENT_LABELS.get(document["document_type"], "文档")
+    return render_template("manage_document.html", document=document)
+
+
+@app.post("/manage/document/<slug>/access")
+@login_required
+def update_document_access(slug):
+    require_csrf()
+    action = (request.form.get("action") or "").strip().lower()
+    if action not in {"enable", "disable"}:
+        abort(400)
+    enabled = 1 if action == "enable" else 0
+    with connect() as conn:
+        row = conn.execute("SELECT 1 FROM documents WHERE slug=?", (slug,)).fetchone()
+        if not row:
+            abort(404)
+        conn.execute(
+            "UPDATE documents SET access_enabled=?, updated_at=CURRENT_TIMESTAMP WHERE slug=?",
+            (enabled, slug),
+        )
+        conn.commit()
+    log_event(slug, "恢复了文档外部访问" if enabled else "暂停了文档外部访问")
+    flash("已恢复访问；原阅读链接和原二维码立即重新有效。" if enabled else "已暂停访问；阅读页和文档页面都会被阻止。", "ok")
+    if (request.form.get("return_to") or "").strip() == "dashboard":
+        return redirect(url_for("admin_dashboard"))
+    return redirect(url_for("manage_document", slug=slug))
+
+
+@app.post("/manage/document/<slug>")
+@login_required
+def update_document_manage(slug):
+    require_csrf()
+    title = (request.form.get("title") or "").strip()[:200] or "未命名文档"
+    description = (request.form.get("description") or "").strip()[:1000]
+    allow_download = 1 if (request.form.get("allow_download") or "").lower() in {"1", "true", "yes", "on"} else 0
+    with connect() as conn:
+        row = conn.execute("SELECT 1 FROM documents WHERE slug=?", (slug,)).fetchone()
+        if not row:
+            abort(404)
+        conn.execute(
+            "UPDATE documents SET title=?, description=?, allow_download=?, updated_at=CURRENT_TIMESTAMP WHERE slug=?",
+            (title, description, allow_download, slug),
+        )
+        conn.commit()
+    log_event(slug, f"更新了标题/简介；原文件下载={'允许' if allow_download else '禁止'}")
+    flash("已保存。", "ok")
+    return redirect(url_for("manage_document", slug=slug))
+
+
+# ----------------------------------- APIs -----------------------------------
 @app.get("/api/status/<slug>")
 def status(slug):
     with connect() as conn:
         row = conn.execute("SELECT status,access_enabled FROM videos WHERE slug=?", (slug,)).fetchone()
     if not row:
         abort(404)
-    progress_text = tail_text(video_log_dir(slug) / "progress.log", 32768)
+    progress_text = tail_text(resource_log_dir(slug) / "progress.log", 32768)
     return {
         "status": row["status"],
         "access_enabled": bool(row["access_enabled"]),
@@ -538,7 +787,7 @@ def video_logs(slug):
         exists = conn.execute("SELECT 1 FROM videos WHERE slug=?", (slug,)).fetchone()
     if not exists:
         abort(404)
-    root = video_log_dir(slug)
+    root = resource_log_dir(slug)
     progress = tail_text(root / "progress.log", 32768)
     return jsonify(
         events=tail_text(root / "events.log", 65536),
@@ -547,9 +796,43 @@ def video_logs(slug):
     )
 
 
+@app.get("/api/document/status/<slug>")
+@login_required
+def document_status(slug):
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT status,access_enabled,page_count,error FROM documents WHERE slug=?", (slug,)
+        ).fetchone()
+    if not row:
+        abort(404)
+    return {
+        "status": row["status"],
+        "access_enabled": bool(row["access_enabled"]),
+        "page_count": row["page_count"],
+        "error": row["error"],
+    }
+
+
+@app.get("/api/document/logs/<slug>")
+@login_required
+def document_logs(slug):
+    with connect() as conn:
+        exists = conn.execute("SELECT 1 FROM documents WHERE slug=?", (slug,)).fetchone()
+    if not exists:
+        abort(404)
+    root = resource_log_dir(slug)
+    return jsonify(
+        events=tail_text(root / "events.log", 65536),
+        convert=tail_text(root / "convert.log", 131072),
+        render=tail_text(root / "render.log", 131072),
+    )
+
+
+# --------------------------------- QR codes ---------------------------------
 @app.get("/qr/<slug>.svg")
 @login_required
 def qr_svg(slug):
+    # Existing endpoint intentionally remains video-only for backwards compatibility.
     with connect() as conn:
         row = conn.execute("SELECT title,description FROM videos WHERE slug=?", (slug,)).fetchone()
     if not row:
@@ -558,10 +841,28 @@ def qr_svg(slug):
     if caption is None:
         caption = row["description"] or row["title"]
     caption = caption.strip()[:160]
-    svg = build_qr_svg(playback_url(slug), caption)
+    svg = build_qr_svg(video_playback_url(slug), caption)
     response = Response(svg, mimetype="image/svg+xml")
     response.headers["Cache-Control"] = "no-store"
     response.headers["Content-Disposition"] = f'inline; filename="{slug}-qr.svg"'
+    return response
+
+
+@app.get("/qr/document/<slug>.svg")
+@login_required
+def qr_document_svg(slug):
+    with connect() as conn:
+        row = conn.execute("SELECT title,description FROM documents WHERE slug=?", (slug,)).fetchone()
+    if not row:
+        abort(404)
+    caption = request.args.get("caption")
+    if caption is None:
+        caption = row["description"] or row["title"]
+    caption = caption.strip()[:160]
+    svg = build_qr_svg(document_reader_url(slug), caption)
+    response = Response(svg, mimetype="image/svg+xml")
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Content-Disposition"] = f'inline; filename="{slug}-document-qr.svg"'
     return response
 
 

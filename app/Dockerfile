@@ -23,7 +23,10 @@ RUN set -eux; \
           /etc/apt/sources.list; \
     fi; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ffmpeg ca-certificates; \
+    apt-get install -y --no-install-recommends \
+        ffmpeg ca-certificates \
+        libreoffice-core libreoffice-writer libreoffice-calc libreoffice-impress \
+        poppler-utils fonts-noto-cjk fontconfig; \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

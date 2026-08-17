@@ -1,6 +1,6 @@
 services:
   app:
-    image: video-box-app:1.0
+    image: video-box-app:1.1.0
     build:
       context: ./app
       args:
@@ -10,7 +10,7 @@ services:
         PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}
     restart: unless-stopped
     environment:
-      APP_VERSION: "1.0"
+      APP_VERSION: "1.1.0"
       APP_SECRET: ${APP_SECRET:-change-me-now}
       APP_PASSWORD: ${APP_PASSWORD:-}
       APP_SESSION_HOURS: ${APP_SESSION_HOURS:-12}
@@ -35,7 +35,7 @@ services:
       retries: 3
 
   worker:
-    image: video-box-app:1.0
+    image: video-box-app:1.1.0
     build:
       context: ./app
       args:
@@ -45,7 +45,7 @@ services:
         PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}
     restart: unless-stopped
     environment:
-      APP_VERSION: "1.0"
+      APP_VERSION: "1.1.0"
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       KEEP_ORIGINAL: ${KEEP_ORIGINAL:-false}
       DB_PATH: /data/db/video.db
@@ -55,6 +55,9 @@ services:
       FFMPEG_THREADS: ${FFMPEG_THREADS:-1}
       VIDEO_CRF: ${VIDEO_CRF:-24}
       VIDEO_PRESET: ${VIDEO_PRESET:-veryfast}
+      KEEP_DOCUMENT_ORIGINAL: ${KEEP_DOCUMENT_ORIGINAL:-true}
+      DOCUMENT_RENDER_DPI: ${DOCUMENT_RENDER_DPI:-120}
+      DOCUMENT_JPEG_QUALITY: ${DOCUMENT_JPEG_QUALITY:-82}
     volumes:
       - ./data:/data
     command: ["python", "worker.py"]
